@@ -12,7 +12,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 app.add_middleware(
@@ -22,7 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Config ────────────────────────────────────────────────────────────────────
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -33,7 +32,6 @@ SHEET_RESULTADOS = "MatchResultados"
 SHEET_HISTORIA   = "MatchHistoria"
 DEFAULT_TOP_N    = 5
 
-# Pesos del scoring ASBAMA
 W_OFRECE_BUSCA = 0.45
 W_BUSCA_OFRECE = 0.45
 W_ROL          = 0.10
@@ -108,12 +106,10 @@ def calcular_score(a: dict, b: dict) -> float:
         W_BUSCA_OFRECE * jaccard(ofrece_b, busca_a) +
         W_ROL          * (1.0 if roles_complementarios(rol_a, rol_b) else 0.0)
     )
-    # Penalizar misma empresa
     empresa_a = str(a.get("empresa", "")).strip().lower()
     empresa_b = str(b.get("empresa", "")).strip().lower()
     if empresa_a and empresa_a == empresa_b:
         s *= 0.1
-
     return round(min(s * 100, 100), 1)
 
 
@@ -137,20 +133,14 @@ def razon_match(a: dict, b: dict) -> str:
 
 
 def buscar_columna(row: dict, *candidatos) -> str:
-    """
-    Busca el primer candidato que exista como clave en row (case-insensitive,
-    ignorando tildes) y devuelve su valor. Si ninguno coincide, devuelve "".
-    """
     import unicodedata
-    def normalizar_key(k):
-        k = k.lower().strip()
-        return unicodedata.normalize("NFKD", k).encode("ascii", "ignore").decode("ascii")
-
-    row_normalized = {normalizar_key(k): v for k, v in row.items()}
+    def nk(k):
+        return unicodedata.normalize("NFKD", k.lower().strip()).encode("ascii", "ignore").decode("ascii")
+    rn = {nk(k): v for k, v in row.items()}
     for c in candidatos:
-        val = row_normalized.get(normalizar_key(c), None)
-        if val is not None:
-            return str(val)
+        v = rn.get(nk(c))
+        if v is not None:
+            return str(v)
     return ""
 
 
@@ -190,15 +180,16 @@ def leer_participantes(ss) -> list:
     return result
 
 
-# ─── Modelos Pydantic ──────────────────────────────────────────────────────────
+# ─── Pydantic ───────────────────────────────────────────────────────────────────────
 class MatchRequest(BaseModel):
     movil: str
 
+class ClearRequest(BaseModel):
+    movil: str
 
 class BatchRequest(BaseModel):
     registros: Optional[List[dict]] = None
     top_n: Optional[int] = DEFAULT_TOP_N
-
 
 class MatchResult(BaseModel):
     posicion : int
@@ -211,14 +202,12 @@ class MatchResult(BaseModel):
     nivel    : str
     razon    : str
 
-
 class MatchResponse(BaseModel):
     status  : str
     fuente  : Optional[str] = None
     usuario : Optional[str] = None
     matches : Optional[List[MatchResult]] = None
     mensaje : Optional[str] = None
-
 
 class BatchResponse(BaseModel):
     status        : str
@@ -231,8 +220,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.1 activa", "version": "2.1.0"}
-
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.2 activa", "version": "2.2.0"}
 
 @app.get("/health")
 def health():
@@ -241,10 +229,7 @@ def health():
 
 @app.get("/debug")
 def debug():
-    """
-    Muestra las columnas exactas del Sheet y un registro de muestra
-    con los valores mapeados. Usar solo en desarrollo.
-    """
+    """Columnas exactas del Sheet + muestra mapeada. Solo desarrollo."""
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
     try:
@@ -254,14 +239,58 @@ def debug():
     records = sheet.get_all_records()
     if not records:
         return {"columnas": [], "muestra_raw": {}, "muestra_mapeada": {}}
-    columnas = list(records[0].keys())
     participantes = leer_participantes(ss)
     return {
         "total_registros" : len(records),
-        "columnas"        : columnas,
+        "columnas"        : list(records[0].keys()),
         "muestra_raw"     : records[0],
         "muestra_mapeada" : participantes[0] if participantes else {},
     }
+
+
+@app.post("/clear-history")
+def clear_history(req: ClearRequest):
+    """
+    Borra el historial de un móvil en MatchHistoria para forzar recalculo.
+    """
+    gc = get_sheets_client()
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    movil_norm = normalizar(req.movil)
+    try:
+        sheet = ss.worksheet(SHEET_HISTORIA)
+        records = sheet.get_all_records()
+    except Exception:
+        return {"status": "ok", "mensaje": "Hoja MatchHistoria no existe o vacía, nada que borrar."}
+
+    # Buscar la fila (gspread usa 1-index, fila 1 = headers)
+    fila_a_borrar = None
+    for i, row in enumerate(records):
+        if normalizar(str(row.get("Movil", ""))) == movil_norm:
+            fila_a_borrar = i + 2  # +1 por header, +1 por 1-index
+            break
+
+    if fila_a_borrar is None:
+        return {"status": "ok", "mensaje": f"No se encontró historial para {req.movil}"}
+
+    sheet.delete_rows(fila_a_borrar)
+    return {
+        "status": "ok",
+        "mensaje": f"Historial de {req.movil} eliminado. Próxima consulta recalculará con el modelo actualizado."
+    }
+
+
+@app.post("/clear-all-history")
+def clear_all_history():
+    """Borra TODO el historial (reset completo). Usar con cuidado."""
+    gc = get_sheets_client()
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    try:
+        sheet = ss.worksheet(SHEET_HISTORIA)
+        sheet.clear()
+        sheet.append_row(["Movil", "FechaConsulta", "MatchesJSON", "VecesConsultado"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "ok", "mensaje": "Historial completo eliminado. Todos recalcularán en su próxima consulta."}
 
 
 @app.post("/match", response_model=MatchResponse)
@@ -273,7 +302,7 @@ def match(req: MatchRequest):
     ss = gc.open_by_key(SPREADSHEET_ID)
     movil_norm = normalizar(req.movil)
 
-    # ── Historial ──────────────────────────────────────────────────────────────
+    # ── Historial
     matches_guardados = obtener_historial(movil_norm, ss)
     if matches_guardados:
         incrementar_contador(movil_norm, ss)
@@ -286,17 +315,14 @@ def match(req: MatchRequest):
             mensaje=formatear_mensaje(nombre_u, matches_guardados),
         )
 
-    # ── Leer participantes ─────────────────────────────────────────────────────
+    # ── Leer + calcular
     participantes = leer_participantes(ss)
     usuario_row = next((p for p in participantes if p["telefono"] == movil_norm), None)
     if not usuario_row:
         raise HTTPException(status_code=404, detail=f"No se encontró usuario con móvil {req.movil}")
 
-    # ── Calcular scores (un match por empresa) ─────────────────────────────────
     candidatos = [p for p in participantes if p["telefono"] != movil_norm]
-
-    # Dedup: quedarse con el mejor score por empresa
-    empresa_mejor: dict = {}  # empresa_lower -> (score, candidato)
+    empresa_mejor: dict = {}
     for c in candidatos:
         score = calcular_score(usuario_row, c)
         emp = str(c.get("empresa", "")).strip().lower()
@@ -339,8 +365,7 @@ def batch_match(req: BatchRequest):
     if req.registros:
         participantes = []
         for r in req.registros:
-            tel_raw = buscar_columna(r,
-                "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil")
+            tel_raw = buscar_columna(r, "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil")
             participantes.append({
                 "telefono" : normalizar(tel_raw),
                 "nombres"  : buscar_columna(r, "Nombres", "nombres"),
@@ -376,7 +401,6 @@ def batch_match(req: BatchRequest):
             emp = str(c.get("empresa", "")).strip().lower()
             if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
                 empresa_mejor[emp] = (score, c.to_dict())
-
         scored = sorted(empresa_mejor.values(), key=lambda x: x[0], reverse=True)
         for pos, (score, c) in enumerate(scored[:top_n]):
             all_matches.append({
@@ -417,7 +441,7 @@ def batch_match(req: BatchRequest):
     )
 
 
-# ─── Historial ─────────────────────────────────────────────────────────────────
+# ─── Historial helpers ───────────────────────────────────────────────────────────
 def obtener_historial(movil_norm: str, ss):
     try:
         sheet = ss.worksheet(SHEET_HISTORIA)
@@ -460,7 +484,7 @@ def incrementar_contador(movil_norm: str, ss):
         pass
 
 
-# ─── Mensaje WhatsApp ──────────────────────────────────────────────────────────
+# ─── WhatsApp ────────────────────────────────────────────────────────────────────
 def formatear_mensaje(nombre_usuario: str, matches: list) -> str:
     msg  = f"🌿 *{nombre_usuario}*, encontré tus conexiones estratégicas para el Congreso Bananero 2026!\n\n"
     msg += "Analicé todos los perfiles del evento y estos son los más afines a ti:\n\n"
