@@ -5,7 +5,6 @@ from typing import Optional, List
 import json
 import os
 import pandas as pd
-import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
@@ -13,7 +12,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -35,11 +34,10 @@ SHEET_HISTORIA   = "MatchHistoria"
 DEFAULT_TOP_N    = 5
 
 # Pesos del scoring ASBAMA
-W_OFRECE_BUSCA = 0.45   # lo que A ofrece cubre lo que B busca
-W_BUSCA_OFRECE = 0.45   # lo que B ofrece cubre lo que A busca
-W_ROL          = 0.10   # complementariedad de rol
+W_OFRECE_BUSCA = 0.45
+W_BUSCA_OFRECE = 0.45
+W_ROL          = 0.10
 
-# Roles complementarios (pares que suman valor)
 ROLES_COMPLEMENTARIOS = [
     {"Productor / Finca", "Proveedor de insumos agrícolas"},
     {"Productor / Finca", "Proveedor de maquinaria / tecnología"},
@@ -79,8 +77,7 @@ def nombre_completo(nombres: str, apellidos: str) -> str:
 
 
 def parsear_multivalor(val: str) -> set:
-    """Convierte 'A;B;;C' en {'A','B','C'} eliminando vacíos."""
-    if not val:
+    if not val or str(val).strip() in ("", "nan", "None"):
         return set()
     return {v.strip() for v in str(val).split(";") if v.strip()}
 
@@ -99,15 +96,13 @@ def roles_complementarios(rol_a: str, rol_b: str) -> bool:
 
 
 def calcular_score(a: dict, b: dict) -> float:
-    """Score 0-100 entre dos participantes."""
     ofrece_a = parsear_multivalor(a.get("ofrece", ""))
     busca_a  = parsear_multivalor(a.get("busca",  ""))
     ofrece_b = parsear_multivalor(b.get("ofrece", ""))
     busca_b  = parsear_multivalor(b.get("busca",  ""))
-    rol_a    = str(a.get("rol", ""))
-    rol_b    = str(b.get("rol", ""))
+    rol_a    = str(a.get("rol", "")).strip()
+    rol_b    = str(b.get("rol", "")).strip()
 
-    # A ofrece lo que B busca + B ofrece lo que A busca
     s = (
         W_OFRECE_BUSCA * jaccard(ofrece_a, busca_b) +
         W_BUSCA_OFRECE * jaccard(ofrece_b, busca_a) +
@@ -135,14 +130,31 @@ def razon_match(a: dict, b: dict) -> str:
     comun    = ofrece_b & busca_a
     if comun:
         item = next(iter(comun))
-        return f"{b.get('nombres','')} ofrece '{item}', que es exactamente lo que buscas en este evento."
-    if roles_complementarios(str(a.get('rol','')), str(b.get('rol',''))):
+        return f"{b.get('nombres', '')} ofrece '{item}', que es exactamente lo que buscas en este evento."
+    if roles_complementarios(str(a.get("rol", "")), str(b.get("rol", ""))):
         return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en la cadena bananera."
     return "Perfil estratégico con potencial de colaboración en el sector bananero."
 
 
+def buscar_columna(row: dict, *candidatos) -> str:
+    """
+    Busca el primer candidato que exista como clave en row (case-insensitive,
+    ignorando tildes) y devuelve su valor. Si ninguno coincide, devuelve "".
+    """
+    import unicodedata
+    def normalizar_key(k):
+        k = k.lower().strip()
+        return unicodedata.normalize("NFKD", k).encode("ascii", "ignore").decode("ascii")
+
+    row_normalized = {normalizar_key(k): v for k, v in row.items()}
+    for c in candidatos:
+        val = row_normalized.get(normalizar_key(c), None)
+        if val is not None:
+            return str(val)
+    return ""
+
+
 def leer_participantes(ss) -> list:
-    """Lee la hoja Participantes y devuelve lista de dicts normalizados."""
     try:
         sheet = ss.worksheet(SHEET_REGISTROS)
     except Exception:
@@ -150,25 +162,30 @@ def leer_participantes(ss) -> list:
     records = sheet.get_all_records()
     result = []
     for r in records:
-        # Mapear columnas con nombres exactos del CSV de ASBAMA
-        tel_raw = (
-            r.get("Teléfono móvil") or
-            r.get("Telefono movil") or
-            r.get("telefono") or
-            r.get("móvil") or
-            r.get("movil") or ""
-        )
+        tel_raw = buscar_columna(r,
+            "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil", "celular", "tel")
         result.append({
-            "telefono"  : normalizar(tel_raw),
-            "nombres"   : str(r.get("Nombres", r.get("nombres", ""))),
-            "apellidos" : str(r.get("Apellidos", r.get("apellidos", ""))),
-            "email"     : str(r.get("Email", r.get("email", r.get("correo", "")))),
-            "empresa"   : str(r.get("Empresa/Institución", r.get("empresa", ""))),
-            "cargo"     : str(r.get("Cargo", r.get("cargo", ""))),
-            "rol"       : str(r.get("¿Cual es tu rol principal en la cadena de valor del banano?", r.get("rol", ""))),
-            "busca"     : str(r.get("En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ", r.get("busca", ""))),
-            "ofrece"    : str(r.get("¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)", r.get("ofrece", ""))),
-            "tipo"      : str(r.get("Tipo entrada", r.get("tipo", ""))),
+            "telefono" : normalizar(tel_raw),
+            "nombres"  : buscar_columna(r, "Nombres", "nombres", "nombre"),
+            "apellidos": buscar_columna(r, "Apellidos", "apellidos", "apellido"),
+            "email"    : buscar_columna(r, "Email", "email", "correo"),
+            "empresa"  : buscar_columna(r, "Empresa/Institución", "Empresa/Institucion", "empresa", "institucion"),
+            "cargo"    : buscar_columna(r, "Cargo", "cargo"),
+            "rol"      : buscar_columna(r,
+                "¿Cual es tu rol principal en la cadena de valor del banano?",
+                "Cual es tu rol principal en la cadena de valor del banano?",
+                "rol principal", "rol"),
+            "busca"    : buscar_columna(r,
+                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
+                "En este evento, que estas buscando principalmente? (maximo 3 opciones)",
+                "En este evento, ¿qué estás buscando principalmente?",
+                "busca", "buscando"),
+            "ofrece"   : buscar_columna(r,
+                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
+                "Que ofreces a otros participantes del evento? (maximo 3 opciones)",
+                "¿Qué ofreces a otros participantes del evento?",
+                "ofrece", "ofreces"),
+            "tipo"     : buscar_columna(r, "Tipo entrada", "tipo entrada", "tipo"),
         })
     return result
 
@@ -179,7 +196,7 @@ class MatchRequest(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    registros: Optional[List[dict]] = None   # si viene vacío, lee directo del Sheet
+    registros: Optional[List[dict]] = None
     top_n: Optional[int] = DEFAULT_TOP_N
 
 
@@ -214,7 +231,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.0 activa", "version": "2.0.0"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.1 activa", "version": "2.1.0"}
 
 
 @app.get("/health")
@@ -222,23 +239,44 @@ def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
+@app.get("/debug")
+def debug():
+    """
+    Muestra las columnas exactas del Sheet y un registro de muestra
+    con los valores mapeados. Usar solo en desarrollo.
+    """
+    gc = get_sheets_client()
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    try:
+        sheet = ss.worksheet(SHEET_REGISTROS)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    records = sheet.get_all_records()
+    if not records:
+        return {"columnas": [], "muestra_raw": {}, "muestra_mapeada": {}}
+    columnas = list(records[0].keys())
+    participantes = leer_participantes(ss)
+    return {
+        "total_registros" : len(records),
+        "columnas"        : columnas,
+        "muestra_raw"     : records[0],
+        "muestra_mapeada" : participantes[0] if participantes else {},
+    }
+
+
 @app.post("/match", response_model=MatchResponse)
 def match(req: MatchRequest):
-    """Consulta en tiempo real: recibe móvil, devuelve top-N matches."""
     if not req.movil:
         raise HTTPException(status_code=400, detail="Campo 'movil' es requerido")
 
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
-
     movil_norm = normalizar(req.movil)
 
-    # ── Verificar historial primero ────────────────────────────────────────────
+    # ── Historial ──────────────────────────────────────────────────────────────
     matches_guardados = obtener_historial(movil_norm, ss)
     if matches_guardados:
         incrementar_contador(movil_norm, ss)
-        nombre = matches_guardados[0].razon  # placeholder; se sobreescribe
-        # Obtener nombre real
         participantes = leer_participantes(ss)
         usuario_row = next((p for p in participantes if p["telefono"] == movil_norm), None)
         nombre_u = nombre_completo(usuario_row["nombres"], usuario_row["apellidos"]) if usuario_row else req.movil
@@ -254,13 +292,18 @@ def match(req: MatchRequest):
     if not usuario_row:
         raise HTTPException(status_code=404, detail=f"No se encontró usuario con móvil {req.movil}")
 
-    # ── Calcular scores vs todos ───────────────────────────────────────────────
+    # ── Calcular scores (un match por empresa) ─────────────────────────────────
     candidatos = [p for p in participantes if p["telefono"] != movil_norm]
-    scored = []
+
+    # Dedup: quedarse con el mejor score por empresa
+    empresa_mejor: dict = {}  # empresa_lower -> (score, candidato)
     for c in candidatos:
         score = calcular_score(usuario_row, c)
-        scored.append((score, c))
-    scored.sort(key=lambda x: x[0], reverse=True)
+        emp = str(c.get("empresa", "")).strip().lower()
+        if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
+            empresa_mejor[emp] = (score, c)
+
+    scored = sorted(empresa_mejor.values(), key=lambda x: x[0], reverse=True)
     top = scored[:DEFAULT_TOP_N]
 
     matches = [
@@ -289,37 +332,32 @@ def match(req: MatchRequest):
 
 @app.post("/batch-match", response_model=BatchResponse)
 def batch_match(req: BatchRequest):
-    """
-    Corre el modelo completo:
-    - Si req.registros viene con datos, los usa directamente.
-    - Si viene vacío, lee la hoja Participantes del Sheet.
-    Devuelve la tabla completa de matches para todos los usuarios.
-    """
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
-
     top_n = req.top_n or DEFAULT_TOP_N
 
-    # ── Obtener participantes ──────────────────────────────────────────────────
     if req.registros:
-        # Normalizar desde el JSON que envía Apps Script
         participantes = []
         for r in req.registros:
-            tel_raw = (
-                r.get("Teléfono móvil") or r.get("Telefono movil") or
-                r.get("telefono") or r.get("móvil") or r.get("movil") or ""
-            )
+            tel_raw = buscar_columna(r,
+                "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil")
             participantes.append({
-                "telefono"  : normalizar(tel_raw),
-                "nombres"   : str(r.get("Nombres", r.get("nombres", ""))),
-                "apellidos" : str(r.get("Apellidos", r.get("apellidos", ""))),
-                "email"     : str(r.get("Email", r.get("email", ""))),
-                "empresa"   : str(r.get("Empresa/Institución", r.get("empresa", ""))),
-                "cargo"     : str(r.get("Cargo", r.get("cargo", ""))),
-                "rol"       : str(r.get("¿Cual es tu rol principal en la cadena de valor del banano?", r.get("rol", ""))),
-                "busca"     : str(r.get("En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ", r.get("busca", ""))),
-                "ofrece"    : str(r.get("¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)", r.get("ofrece", ""))),
-                "tipo"      : str(r.get("Tipo entrada", r.get("tipo", ""))),
+                "telefono" : normalizar(tel_raw),
+                "nombres"  : buscar_columna(r, "Nombres", "nombres"),
+                "apellidos": buscar_columna(r, "Apellidos", "apellidos"),
+                "email"    : buscar_columna(r, "Email", "email"),
+                "empresa"  : buscar_columna(r, "Empresa/Institución", "empresa"),
+                "cargo"    : buscar_columna(r, "Cargo", "cargo"),
+                "rol"      : buscar_columna(r,
+                    "¿Cual es tu rol principal en la cadena de valor del banano?",
+                    "Cual es tu rol principal en la cadena de valor del banano?", "rol"),
+                "busca"    : buscar_columna(r,
+                    "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
+                    "En este evento, que estas buscando principalmente?", "busca"),
+                "ofrece"   : buscar_columna(r,
+                    "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
+                    "Que ofreces a otros participantes del evento?", "ofrece"),
+                "tipo"     : buscar_columna(r, "Tipo entrada", "tipo"),
             })
     else:
         participantes = leer_participantes(ss)
@@ -327,16 +365,22 @@ def batch_match(req: BatchRequest):
     if not participantes:
         raise HTTPException(status_code=400, detail="No hay participantes para procesar")
 
-    # ── Correr modelo con pandas ───────────────────────────────────────────────
     df = pd.DataFrame(participantes)
     all_matches = []
 
     for i, usuario in df.iterrows():
-        candidatos = df[df["telefono"] != usuario["telefono"]]
-        scored = []
-        for _, c in candidatos.iterrows():
+        candidatos_df = df[df["telefono"] != usuario["telefono"]]
+        empresa_mejor: dict = {}
+        for _, c in candidatos_df.iterrows():
             score = calcular_score(usuario.to_dict(), c.to_dict())
-            scored.append({
+            emp = str(c.get("empresa", "")).strip().lower()
+            if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
+                empresa_mejor[emp] = (score, c.to_dict())
+
+        scored = sorted(empresa_mejor.values(), key=lambda x: x[0], reverse=True)
+        for pos, (score, c) in enumerate(scored[:top_n]):
+            all_matches.append({
+                "posicion"       : pos + 1,
                 "tel_usuario"    : usuario["telefono"],
                 "nombre_usuario" : nombre_completo(usuario["nombres"], usuario["apellidos"]),
                 "email_usuario"  : usuario["email"],
@@ -348,41 +392,35 @@ def batch_match(req: BatchRequest):
                 "cargo_match"    : c["cargo"],
                 "score"          : score,
                 "nivel"          : nivel_desde_score(score),
-                "razon"          : razon_match(usuario.to_dict(), c.to_dict()),
+                "razon"          : razon_match(usuario.to_dict(), c),
             })
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        for pos, m in enumerate(scored[:top_n]):
-            m["posicion"] = pos + 1
-            all_matches.append(m)
 
-    # ── Escribir resultados en MatchResultados ─────────────────────────────────
     try:
         try:
             sheet_res = ss.worksheet(SHEET_RESULTADOS)
             sheet_res.clear()
         except Exception:
-            sheet_res = ss.add_worksheet(title=SHEET_RESULTADOS, rows=str(len(all_matches) + 10), cols="15")
-
+            sheet_res = ss.add_worksheet(title=SHEET_RESULTADOS, rows=str(len(all_matches)+10), cols="15")
         if all_matches:
             headers = list(all_matches[0].keys())
-            rows    = [headers] + [[m.get(h, "") for h in headers] for m in all_matches]
+            rows = [headers] + [[m.get(h, "") for h in headers] for m in all_matches]
             sheet_res.update(rows, "A1")
-    except Exception as e:
-        pass  # No bloquear la respuesta si falla escribir al Sheet
+    except Exception:
+        pass
 
     return BatchResponse(
-        status         = "ok",
-        total_usuarios = len(participantes),
-        total_matches  = len(all_matches),
-        matches        = all_matches,
-        mensaje        = f"Modelo corrido: {len(participantes)} participantes × top-{top_n} matches cada uno. Resultados guardados en '{SHEET_RESULTADOS}'.",
+        status="ok",
+        total_usuarios=len(participantes),
+        total_matches=len(all_matches),
+        matches=all_matches,
+        mensaje=f"Modelo corrido: {len(participantes)} participantes × top-{top_n}. Resultados en '{SHEET_RESULTADOS}'.",
     )
 
 
 # ─── Historial ─────────────────────────────────────────────────────────────────
 def obtener_historial(movil_norm: str, ss):
     try:
-        sheet   = ss.worksheet(SHEET_HISTORIA)
+        sheet = ss.worksheet(SHEET_HISTORIA)
         records = sheet.get_all_records()
     except Exception:
         return None
@@ -412,7 +450,7 @@ def guardar_historial(movil_norm: str, matches: list, ss):
 
 def incrementar_contador(movil_norm: str, ss):
     try:
-        sheet   = ss.worksheet(SHEET_HISTORIA)
+        sheet = ss.worksheet(SHEET_HISTORIA)
         records = sheet.get_all_records()
         for i, row in enumerate(records):
             if normalizar(str(row.get("Movil", ""))) == movil_norm:
@@ -422,7 +460,7 @@ def incrementar_contador(movil_norm: str, ss):
         pass
 
 
-# ─── Formatear mensaje WhatsApp ────────────────────────────────────────────────
+# ─── Mensaje WhatsApp ──────────────────────────────────────────────────────────
 def formatear_mensaje(nombre_usuario: str, matches: list) -> str:
     msg  = f"🌿 *{nombre_usuario}*, encontré tus conexiones estratégicas para el Congreso Bananero 2026!\n\n"
     msg += "Analicé todos los perfiles del evento y estos son los más afines a ti:\n\n"
