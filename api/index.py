@@ -74,7 +74,7 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["innovacion"],                         "tecnologia"),
     (["solucion"],                           "tecnologia"),
     (["financiero"],                         "financiero"),
-    (["seguro"],                             "financiero"],
+    (["seguro"],                             "financiero"),
     (["credito"],                            "financiero"),
     (["formacion"],                          "formacion"),
     (["investigacion"],                      "formacion"),
@@ -475,7 +475,6 @@ def batch_match(req: BatchRequest):
                 "score": score, "nivel": nivel_desde_score(score), "razon": razon_match(usuario.to_dict(), c),
             })
 
-    # Solo escribe al Sheet en modo completo
     if not req.todos:
         try:
             try:
