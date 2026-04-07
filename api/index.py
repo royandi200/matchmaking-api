@@ -74,7 +74,7 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["innovacion"],                         "tecnologia"),
     (["solucion"],                           "tecnologia"),
     (["financiero"],                         "financiero"),
-    (["seguro"],                             "financiero"),
+    (["seguro"],                             "financiero"],
     (["credito"],                            "financiero"),
     (["formacion"],                          "formacion"),
     (["investigacion"],                      "formacion"),
@@ -86,7 +86,6 @@ CANON_RULES: list[tuple[list[str], str]] = [
 
 
 def nk(k: str) -> str:
-    """Quita tildes, minúsculas, strip — conserva espacios."""
     s = unicodedata.normalize("NFKD", str(k))
     s = s.encode("ascii", "ignore").decode("ascii")
     s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
@@ -94,10 +93,6 @@ def nk(k: str) -> str:
 
 
 def nk_compact(k: str) -> str:
-    """Sin espacios — para comparar nombres de columnas del Sheet.
-    rol_cadena / Rol Cadena / rolcadena / ROL CADENA → 'rolcadena'
-    tipo_entrada / Tipo Entrada / tipoentrada      → 'tipoentrada'
-    """
     return re.sub(r"\s+", "", nk(k))
 
 
@@ -110,7 +105,6 @@ def canonicalizar(val: str) -> str:
 
 
 def parsear_multivalor(val: str) -> set:
-    """Acepta ; o , o \n como separadores."""
     if not val or str(val).strip() in ("", "nan", "None"):
         return set()
     raw = str(val)
@@ -150,7 +144,6 @@ def jaccard(set_a: set, set_b: set) -> float:
     return inter / union if union > 0 else 0.0
 
 def roles_complementarios(rol_a: str, rol_b: str) -> bool:
-    """Compara roles usando nk() — tolera tildes, mayúsculas y variantes."""
     ra = nk(rol_a.strip())
     rb = nk(rol_b.strip())
     for pair in ROLES_COMPLEMENTARIOS:
@@ -212,10 +205,6 @@ def razon_match(a: dict, b: dict) -> str:
 
 
 def buscar_columna(row: dict, *candidatos) -> str:
-    """Usa nk_compact para tolerar guiones bajos, espacios, tildes y mayúsculas
-    en los nombres de columna del Sheet.
-    Ej: 'rol_cadena' == 'rolcadena' == 'Rol Cadena' == 'ROL CADENA'
-    """
     rn = {nk_compact(k): v for k, v in row.items()}
     for c in candidatos:
         v = rn.get(nk_compact(c))
@@ -231,9 +220,7 @@ def leer_participantes(ss) -> list:
         raise HTTPException(status_code=500, detail=f"Hoja '{SHEET_REGISTROS}' no encontrada")
     result = []
     for r in sheet.get_all_records():
-        tel_raw = buscar_columna(r,
-            "telefono", "telefono movil", "movil", "celular", "tel"
-        )
+        tel_raw = buscar_columna(r, "telefono", "telefono movil", "movil", "celular", "tel")
         result.append({
             "telefono" : normalizar_tel(tel_raw),
             "nombres"  : buscar_columna(r, "nombres", "nombre"),
@@ -241,33 +228,15 @@ def leer_participantes(ss) -> list:
             "email"    : buscar_columna(r, "email", "correo"),
             "empresa"  : buscar_columna(r, "empresa", "empresa institucion", "institucion"),
             "cargo"    : buscar_columna(r, "cargo"),
-            "rol"      : buscar_columna(r,
-                "rol cadena",
-                "rolcadena",
-                "rol principal",
-                "rol"
-            ),
-            "busca"    : buscar_columna(r,
-                "busca",
-                "en este evento que estas buscando principalmente maximo 3 opciones",
-                "buscando"
-            ),
-            "ofrece"   : buscar_columna(r,
-                "ofrece",
-                "que ofreces a otros participantes del evento maximo 3 opciones",
-                "ofreces"
-            ),
-            "tipo"     : buscar_columna(r,
-                "tipo entrada",
-                "tipoentrada",
-                "tipo"
-            ),
+            "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol principal", "rol"),
+            "busca"    : buscar_columna(r, "busca", "en este evento que estas buscando principalmente maximo 3 opciones", "buscando"),
+            "ofrece"   : buscar_columna(r, "ofrece", "que ofreces a otros participantes del evento maximo 3 opciones", "ofreces"),
+            "tipo"     : buscar_columna(r, "tipo entrada", "tipoentrada", "tipo"),
         })
     return result
 
 
 def mapear_registro(r: dict) -> dict:
-    """Mapea un registro crudo (de Apps Script) al formato interno."""
     return {
         "telefono" : normalizar_tel(buscar_columna(r, "telefono", "telefono movil", "movil")),
         "nombres"  : buscar_columna(r, "nombres", "nombre"),
@@ -282,7 +251,6 @@ def mapear_registro(r: dict) -> dict:
     }
 
 
-# ─── Pydantic
 class MatchRequest(BaseModel):
     movil: str
 
@@ -290,8 +258,8 @@ class ClearRequest(BaseModel):
     movil: str
 
 class BatchRequest(BaseModel):
-    registros: Optional[List[dict]] = None   # lote a procesar (puede ser subconjunto)
-    todos: Optional[List[dict]] = None        # base completa para matchear contra ella
+    registros: Optional[List[dict]] = None
+    todos: Optional[List[dict]] = None
     top_n: Optional[int] = DEFAULT_TOP_N
 
 class MatchResult(BaseModel):
@@ -320,7 +288,6 @@ class BatchResponse(BaseModel):
     mensaje       : Optional[str] = None
 
 
-# ─── Endpoints
 @app.get("/")
 def root():
     return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.3 activa", "version": "2.5.3"}
@@ -466,21 +433,17 @@ def match(req: MatchRequest):
 @app.post("/batch-match", response_model=BatchResponse)
 def batch_match(req: BatchRequest):
     """
-    Soporta dos modos:
-    1. Sin registros ni todos → lee todo del Sheet y procesa completo (hasta ~70 participantes)
-    2. Con registros + todos  → procesa solo el lote (registros) contra la base completa (todos)
-       Permite partir 1000 participantes en lotes de 50 desde Apps Script sin timeout.
-       Resultado idéntico al modo completo.
+    Modo 1 (sin registros): lee Sheet completo y procesa todo.
+    Modo 2 (registros + todos): procesa el lote contra la base completa.
+    Permite partir 1000 participantes en lotes de 50 sin timeout.
     """
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
     top_n = req.top_n or DEFAULT_TOP_N
 
-    # Modo lote: registros = lote a procesar, todos = base completa
     if req.registros and req.todos:
         lote = [mapear_registro(r) for r in req.registros]
         base = [mapear_registro(r) for r in req.todos]
-    # Modo completo: lee todo del Sheet
     elif req.registros and not req.todos:
         lote = [mapear_registro(r) for r in req.registros]
         base = lote
@@ -512,7 +475,7 @@ def batch_match(req: BatchRequest):
                 "score": score, "nivel": nivel_desde_score(score), "razon": razon_match(usuario.to_dict(), c),
             })
 
-    # Solo escribe al Sheet cuando es el modo completo (sin lotes)
+    # Solo escribe al Sheet en modo completo
     if not req.todos:
         try:
             try:
