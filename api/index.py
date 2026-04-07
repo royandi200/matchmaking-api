@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.5.0"
+    version="2.5.1"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -20,7 +20,7 @@ SPREADSHEET_ID   = os.environ.get("SPREADSHEET_ID", "")
 SHEET_REGISTROS  = "Participantes"
 SHEET_RESULTADOS = "MatchResultados"
 SHEET_HISTORIA   = "MatchHistoria"
-DEFAULT_TOP_N    = 5
+DEFAULT_TOP_N    = 10
 
 W_OFRECE_BUSCA = 0.45
 W_BUSCA_OFRECE = 0.45
@@ -35,7 +35,6 @@ ROLES_COMPLEMENTARIOS = [
     {"Productor / Finca", "Academia / centro de investigación"},
     {"Proveedor de insumos agrícolas", "Consultoría / servicios técnicos"},
     {"Academia / centro de investigación", "Proveedor de insumos agrícolas"},
-    # Versiones sin tildes (cabeceras limpias)
     {"Productor / Finca", "Proveedor de insumos agricolas"},
     {"Productor / Finca", "Proveedor de maquinaria / tecnologia"},
     {"Productor / Finca", "Empresa de logistica / transporte / puerto"},
@@ -48,62 +47,46 @@ ROLES_COMPLEMENTARIOS = [
 
 NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
 
-# ─── Reglas de canonicalización por KEYWORDS (orden importa: más específico primero)
 CANON_RULES: list[tuple[list[str], str]] = [
-    # Fruta
     (["fruta"],                              "fruta_banana"),
     (["banano"],                             "fruta_banana"),
     (["platano"],                            "fruta_banana"),
-    # Insumos
     (["insumos", "agri"],                   "insumos_agricolas"),
     (["fertilizante"],                       "insumos_agricolas"),
     (["agroquim"],                           "insumos_agricolas"),
     (["bioinsumo"],                          "insumos_agricolas"),
     (["proveedores", "insumo"],              "insumos_agricolas"),
     (["proveedores", "servicio"],            "insumos_agricolas"),
-    # Maquinaria
     (["maquinaria"],                         "maquinaria_equipos"),
     (["equipos"],                            "maquinaria_equipos"),
     (["riego"],                              "maquinaria_equipos"),
     (["empaque"],                            "maquinaria_equipos"),
     (["postcosecha"],                        "maquinaria_equipos"),
-    # Compradores
     (["comprador"],                          "compradores"),
     (["compradores"],                        "compradores"),
-    # Alianzas
     (["alianza"],                            "alianzas"),
-    # Aprendizaje
     (["aprender"],                           "aprendizaje"),
     (["actualizarme"],                       "aprendizaje"),
     (["aprendizaje"],                        "aprendizaje"),
-    # Networking
     (["networking"],                         "networking"),
-    # Certificaciones
     (["certificacion"],                      "certificaciones"),
     (["auditoria"],                          "certificaciones"),
     (["normativa"],                          "certificaciones"),
-    # Sostenibilidad
     (["sostenibilidad"],                     "sostenibilidad"),
     (["esg"],                               "sostenibilidad"),
-    # Exportacion
     (["exportacion"],                        "exportacion"),
     (["comercializacion"],                   "exportacion"),
-    # Consultoria
     (["consultoria"],                        "consultoria"),
     (["tecnica", "gestion"],                 "consultoria"),
-    # Tecnologia
     (["tecnolog"],                           "tecnologia"),
     (["innovacion"],                         "tecnologia"),
     (["solucion"],                           "tecnologia"),
-    # Financiero
     (["financiero"],                         "financiero"),
     (["seguro"],                             "financiero"),
     (["credito"],                            "financiero"),
-    # Formacion
     (["formacion"],                          "formacion"),
     (["investigacion"],                      "formacion"),
     (["transferencia", "conocimiento"],      "formacion"),
-    # Logistica
     (["logistica"],                          "logistica"),
     (["transporte"],                         "logistica"),
     (["puerto"],                             "logistica"),
@@ -111,7 +94,6 @@ CANON_RULES: list[tuple[list[str], str]] = [
 
 
 def nk(k: str) -> str:
-    """Normaliza: lower, strip, quitar tildes y caracteres no-ASCII."""
     s = unicodedata.normalize("NFKD", str(k))
     s = s.encode("ascii", "ignore").decode("ascii")
     s = re.sub(r"[^\w\s/]", " ", s)
@@ -119,7 +101,6 @@ def nk(k: str) -> str:
 
 
 def canonicalizar(val: str) -> str:
-    """Mapea un valor crudo a su token canónico usando keyword matching."""
     k = nk(val)
     for keywords, canon in CANON_RULES:
         if all(kw in k for kw in keywords):
@@ -128,10 +109,23 @@ def canonicalizar(val: str) -> str:
 
 
 def parsear_multivalor(val: str) -> set:
+    """Acepta ; o , o \n como separadores (Google Forms puede usar cualquiera)."""
     if not val or str(val).strip() in ("", "nan", "None"):
         return set()
-    items = {v.strip() for v in str(val).split(";") if v.strip()}
-    return {canonicalizar(i) for i in items if canonicalizar(i) != "otro"}
+    raw = str(val)
+    if ";" in raw:
+        items = raw.split(";")
+    elif "," in raw:
+        items = raw.split(",") if raw.count(",") >= 1 else [raw]
+    else:
+        items = raw.split("\n")
+    items = {v.strip() for v in items if v.strip()}
+    result = set()
+    for i in items:
+        c = canonicalizar(i)
+        if c and c != "otro" and len(c) > 2:
+            result.add(c)
+    return result
 
 
 def get_sheets_client():
@@ -223,11 +217,8 @@ def leer_participantes(ss) -> list:
         raise HTTPException(status_code=500, detail=f"Hoja '{SHEET_REGISTROS}' no encontrada")
     result = []
     for r in sheet.get_all_records():
-        # Soporte cabeceras limpias (nuevas) Y originales (antiguas) simultáneamente
         tel_raw = buscar_columna(r,
-            # Cabeceras limpias (nuevas sin tildes)
             "telefono",
-            # Cabeceras originales
             "Teléfono móvil", "Telefono movil", "móvil", "movil", "celular", "tel"
         )
         result.append({
@@ -238,26 +229,20 @@ def leer_participantes(ss) -> list:
             "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución", "Empresa/Institucion", "institucion"),
             "cargo"    : buscar_columna(r, "cargo", "Cargo"),
             "rol"      : buscar_columna(r,
-                # Cabecera limpia nueva
                 "rolcadena",
-                # Cabeceras originales
                 "¿Cual es tu rol principal en la cadena de valor del banano?",
                 "Cual es tu rol principal en la cadena de valor del banano?",
                 "rol principal", "rol"
             ),
             "busca"    : buscar_columna(r,
-                # Cabecera limpia nueva
                 "busca",
-                # Cabeceras originales
                 "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
                 "En este evento, que estas buscando principalmente? (maximo 3 opciones)",
                 "En este evento, ¿qué estás buscando principalmente?",
                 "buscando"
             ),
             "ofrece"   : buscar_columna(r,
-                # Cabecera limpia nueva
                 "ofrece",
-                # Cabeceras originales
                 "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
                 "Que ofreces a otros participantes del evento? (maximo 3 opciones)",
                 "¿Qué ofreces a otros participantes del evento?",
@@ -268,7 +253,6 @@ def leer_participantes(ss) -> list:
     return result
 
 
-# ─── Pydantic
 class MatchRequest(BaseModel):
     movil: str
 
@@ -305,10 +289,9 @@ class BatchResponse(BaseModel):
     mensaje       : Optional[str] = None
 
 
-# ─── Endpoints
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.0 activa", "version": "2.5.0"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.1 activa", "version": "2.5.1"}
 
 @app.get("/health")
 def health():
@@ -367,6 +350,8 @@ def debug_user(movil: str):
             "rol_ok"         : rol_ok,
             "ofrece_c"       : list(ofrece_c),
             "busca_c"        : list(busca_c),
+            "busca_raw"      : c.get("busca", ""),
+            "ofrece_raw"     : c.get("ofrece", ""),
         })
     scores_debug.sort(key=lambda x: x["score"], reverse=True)
     return {
@@ -462,18 +447,9 @@ def batch_match(req: BatchRequest):
             "email"    : buscar_columna(r, "email", "Email"),
             "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución"),
             "cargo"    : buscar_columna(r, "cargo", "Cargo"),
-            "rol"      : buscar_columna(r,
-                "rolcadena",
-                "¿Cual es tu rol principal en la cadena de valor del banano?",
-                "rol"),
-            "busca"    : buscar_columna(r,
-                "busca",
-                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
-                "buscando"),
-            "ofrece"   : buscar_columna(r,
-                "ofrece",
-                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
-                "ofreces"),
+            "rol"      : buscar_columna(r, "rolcadena", "¿Cual es tu rol principal en la cadena de valor del banano?", "rol"),
+            "busca"    : buscar_columna(r, "busca", "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ", "buscando"),
+            "ofrece"   : buscar_columna(r, "ofrece", "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)", "ofreces"),
             "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada"),
         } for r in req.registros
     ]
