@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.4.0"
+    version="2.5.0"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -35,12 +35,20 @@ ROLES_COMPLEMENTARIOS = [
     {"Productor / Finca", "Academia / centro de investigación"},
     {"Proveedor de insumos agrícolas", "Consultoría / servicios técnicos"},
     {"Academia / centro de investigación", "Proveedor de insumos agrícolas"},
+    # Versiones sin tildes (cabeceras limpias)
+    {"Productor / Finca", "Proveedor de insumos agricolas"},
+    {"Productor / Finca", "Proveedor de maquinaria / tecnologia"},
+    {"Productor / Finca", "Empresa de logistica / transporte / puerto"},
+    {"Productor / Finca", "Empresa de certificacion / auditoria"},
+    {"Productor / Finca", "Consultoria / servicios tecnicos"},
+    {"Productor / Finca", "Academia / centro de investigacion"},
+    {"Proveedor de insumos agricolas", "Consultoria / servicios tecnicos"},
+    {"Academia / centro de investigacion", "Proveedor de insumos agricolas"},
 ]
 
 NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
 
 # ─── Reglas de canonicalización por KEYWORDS (orden importa: más específico primero)
-# Cada regla: si el texto contiene TODAS las keywords → asigna el canon
 CANON_RULES: list[tuple[list[str], str]] = [
     # Fruta
     (["fruta"],                              "fruta_banana"),
@@ -106,7 +114,7 @@ def nk(k: str) -> str:
     """Normaliza: lower, strip, quitar tildes y caracteres no-ASCII."""
     s = unicodedata.normalize("NFKD", str(k))
     s = s.encode("ascii", "ignore").decode("ascii")
-    s = re.sub(r"[^\w\s/]", " ", s)   # reemplaza símbolos raros por espacio
+    s = re.sub(r"[^\w\s/]", " ", s)
     return s.lower().strip()
 
 
@@ -116,7 +124,7 @@ def canonicalizar(val: str) -> str:
     for keywords, canon in CANON_RULES:
         if all(kw in k for kw in keywords):
             return canon
-    return k  # devuelve normalizado si no hay regla
+    return k
 
 
 def parsear_multivalor(val: str) -> set:
@@ -215,29 +223,47 @@ def leer_participantes(ss) -> list:
         raise HTTPException(status_code=500, detail=f"Hoja '{SHEET_REGISTROS}' no encontrada")
     result = []
     for r in sheet.get_all_records():
-        tel_raw = buscar_columna(r, "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil", "celular", "tel")
+        # Soporte cabeceras limpias (nuevas) Y originales (antiguas) simultáneamente
+        tel_raw = buscar_columna(r,
+            # Cabeceras limpias (nuevas sin tildes)
+            "telefono",
+            # Cabeceras originales
+            "Teléfono móvil", "Telefono movil", "móvil", "movil", "celular", "tel"
+        )
         result.append({
             "telefono" : normalizar_tel(tel_raw),
-            "nombres"  : buscar_columna(r, "Nombres", "nombres", "nombre"),
-            "apellidos": buscar_columna(r, "Apellidos", "apellidos", "apellido"),
-            "email"    : buscar_columna(r, "Email", "email", "correo"),
-            "empresa"  : buscar_columna(r, "Empresa/Institución", "Empresa/Institucion", "empresa", "institucion"),
-            "cargo"    : buscar_columna(r, "Cargo", "cargo"),
+            "nombres"  : buscar_columna(r, "nombres", "Nombres", "nombre"),
+            "apellidos": buscar_columna(r, "apellidos", "Apellidos", "apellido"),
+            "email"    : buscar_columna(r, "email", "Email", "correo"),
+            "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución", "Empresa/Institucion", "institucion"),
+            "cargo"    : buscar_columna(r, "cargo", "Cargo"),
             "rol"      : buscar_columna(r,
+                # Cabecera limpia nueva
+                "rolcadena",
+                # Cabeceras originales
                 "¿Cual es tu rol principal en la cadena de valor del banano?",
                 "Cual es tu rol principal en la cadena de valor del banano?",
-                "rol principal", "rol"),
+                "rol principal", "rol"
+            ),
             "busca"    : buscar_columna(r,
+                # Cabecera limpia nueva
+                "busca",
+                # Cabeceras originales
                 "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
                 "En este evento, que estas buscando principalmente? (maximo 3 opciones)",
                 "En este evento, ¿qué estás buscando principalmente?",
-                "busca", "buscando"),
+                "buscando"
+            ),
             "ofrece"   : buscar_columna(r,
+                # Cabecera limpia nueva
+                "ofrece",
+                # Cabeceras originales
                 "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
                 "Que ofreces a otros participantes del evento? (maximo 3 opciones)",
                 "¿Qué ofreces a otros participantes del evento?",
-                "ofrece", "ofreces"),
-            "tipo"     : buscar_columna(r, "Tipo entrada", "tipo entrada", "tipo"),
+                "ofreces"
+            ),
+            "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada", "tipo entrada"),
         })
     return result
 
@@ -282,7 +308,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.4.0 activa", "version": "2.4.0"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.0 activa", "version": "2.5.0"}
 
 @app.get("/health")
 def health():
@@ -429,16 +455,26 @@ def batch_match(req: BatchRequest):
     top_n = req.top_n or DEFAULT_TOP_N
     participantes = leer_participantes(ss) if not req.registros else [
         {
-            "telefono" : normalizar_tel(buscar_columna(r, "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil")),
-            "nombres"  : buscar_columna(r, "Nombres", "nombres"),
-            "apellidos": buscar_columna(r, "Apellidos", "apellidos"),
-            "email"    : buscar_columna(r, "Email", "email"),
-            "empresa"  : buscar_columna(r, "Empresa/Institución", "empresa"),
-            "cargo"    : buscar_columna(r, "Cargo", "cargo"),
-            "rol"      : buscar_columna(r, "¿Cual es tu rol principal en la cadena de valor del banano?", "rol"),
-            "busca"    : buscar_columna(r, "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ", "busca"),
-            "ofrece"   : buscar_columna(r, "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)", "ofrece"),
-            "tipo"     : buscar_columna(r, "Tipo entrada", "tipo"),
+            "telefono" : normalizar_tel(buscar_columna(r,
+                "telefono", "Teléfono móvil", "Telefono movil", "móvil", "movil")),
+            "nombres"  : buscar_columna(r, "nombres", "Nombres"),
+            "apellidos": buscar_columna(r, "apellidos", "Apellidos"),
+            "email"    : buscar_columna(r, "email", "Email"),
+            "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución"),
+            "cargo"    : buscar_columna(r, "cargo", "Cargo"),
+            "rol"      : buscar_columna(r,
+                "rolcadena",
+                "¿Cual es tu rol principal en la cadena de valor del banano?",
+                "rol"),
+            "busca"    : buscar_columna(r,
+                "busca",
+                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
+                "buscando"),
+            "ofrece"   : buscar_columna(r,
+                "ofrece",
+                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
+                "ofreces"),
+            "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada"),
         } for r in req.registros
     ]
     if not participantes:
