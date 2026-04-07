@@ -2,8 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
-import json
-import os
+import json, os, unicodedata, re
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -12,20 +11,11 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.2.0"
+    version="2.5.0"
 )
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+SCOPES            = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 SPREADSHEET_ID   = os.environ.get("SPREADSHEET_ID", "")
 SHEET_REGISTROS  = "Participantes"
 SHEET_RESULTADOS = "MatchResultados"
@@ -45,35 +35,117 @@ ROLES_COMPLEMENTARIOS = [
     {"Productor / Finca", "Academia / centro de investigación"},
     {"Proveedor de insumos agrícolas", "Consultoría / servicios técnicos"},
     {"Academia / centro de investigación", "Proveedor de insumos agrícolas"},
+    # Versiones sin tildes (cabeceras limpias)
+    {"Productor / Finca", "Proveedor de insumos agricolas"},
+    {"Productor / Finca", "Proveedor de maquinaria / tecnologia"},
+    {"Productor / Finca", "Empresa de logistica / transporte / puerto"},
+    {"Productor / Finca", "Empresa de certificacion / auditoria"},
+    {"Productor / Finca", "Consultoria / servicios tecnicos"},
+    {"Productor / Finca", "Academia / centro de investigacion"},
+    {"Proveedor de insumos agricolas", "Consultoria / servicios tecnicos"},
+    {"Academia / centro de investigacion", "Proveedor de insumos agricolas"},
 ]
 
-NIVELES_SCORE = [
-    (90, "Excepcional"),
-    (75, "Altamente Compatible"),
-    (60, "Muy Compatible"),
-    (0,  "Compatible"),
+NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
+
+# ─── Reglas de canonicalización por KEYWORDS (orden importa: más específico primero)
+CANON_RULES: list[tuple[list[str], str]] = [
+    # Fruta
+    (["fruta"],                              "fruta_banana"),
+    (["banano"],                             "fruta_banana"),
+    (["platano"],                            "fruta_banana"),
+    # Insumos
+    (["insumos", "agri"],                   "insumos_agricolas"),
+    (["fertilizante"],                       "insumos_agricolas"),
+    (["agroquim"],                           "insumos_agricolas"),
+    (["bioinsumo"],                          "insumos_agricolas"),
+    (["proveedores", "insumo"],              "insumos_agricolas"),
+    (["proveedores", "servicio"],            "insumos_agricolas"),
+    # Maquinaria
+    (["maquinaria"],                         "maquinaria_equipos"),
+    (["equipos"],                            "maquinaria_equipos"),
+    (["riego"],                              "maquinaria_equipos"),
+    (["empaque"],                            "maquinaria_equipos"),
+    (["postcosecha"],                        "maquinaria_equipos"),
+    # Compradores
+    (["comprador"],                          "compradores"),
+    (["compradores"],                        "compradores"),
+    # Alianzas
+    (["alianza"],                            "alianzas"),
+    # Aprendizaje
+    (["aprender"],                           "aprendizaje"),
+    (["actualizarme"],                       "aprendizaje"),
+    (["aprendizaje"],                        "aprendizaje"),
+    # Networking
+    (["networking"],                         "networking"),
+    # Certificaciones
+    (["certificacion"],                      "certificaciones"),
+    (["auditoria"],                          "certificaciones"),
+    (["normativa"],                          "certificaciones"),
+    # Sostenibilidad
+    (["sostenibilidad"],                     "sostenibilidad"),
+    (["esg"],                               "sostenibilidad"),
+    # Exportacion
+    (["exportacion"],                        "exportacion"),
+    (["comercializacion"],                   "exportacion"),
+    # Consultoria
+    (["consultoria"],                        "consultoria"),
+    (["tecnica", "gestion"],                 "consultoria"),
+    # Tecnologia
+    (["tecnolog"],                           "tecnologia"),
+    (["innovacion"],                         "tecnologia"),
+    (["solucion"],                           "tecnologia"),
+    # Financiero
+    (["financiero"],                         "financiero"),
+    (["seguro"],                             "financiero"),
+    (["credito"],                            "financiero"),
+    # Formacion
+    (["formacion"],                          "formacion"),
+    (["investigacion"],                      "formacion"),
+    (["transferencia", "conocimiento"],      "formacion"),
+    # Logistica
+    (["logistica"],                          "logistica"),
+    (["transporte"],                         "logistica"),
+    (["puerto"],                             "logistica"),
 ]
+
+
+def nk(k: str) -> str:
+    """Normaliza: lower, strip, quitar tildes y caracteres no-ASCII."""
+    s = unicodedata.normalize("NFKD", str(k))
+    s = s.encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^\w\s/]", " ", s)
+    return s.lower().strip()
+
+
+def canonicalizar(val: str) -> str:
+    """Mapea un valor crudo a su token canónico usando keyword matching."""
+    k = nk(val)
+    for keywords, canon in CANON_RULES:
+        if all(kw in k for kw in keywords):
+            return canon
+    return k
+
+
+def parsear_multivalor(val: str) -> set:
+    if not val or str(val).strip() in ("", "nan", "None"):
+        return set()
+    items = {v.strip() for v in str(val).split(";") if v.strip()}
+    return {canonicalizar(i) for i in items if canonicalizar(i) != "otro"}
 
 
 def get_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS", "")
     if not creds_json:
         raise HTTPException(status_code=500, detail="GOOGLE_CREDENTIALS no configurado")
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
     return gspread.authorize(creds)
 
-
-def normalizar(val) -> str:
+def normalizar_tel(val) -> str:
     return "".join(filter(str.isdigit, str(val)))
 
 def nombre_completo(nombres: str, apellidos: str) -> str:
     return f"{nombres} {apellidos}".strip()
-
-def parsear_multivalor(val: str) -> set:
-    if not val or str(val).strip() in ("", "nan", "None"):
-        return set()
-    return {v.strip() for v in str(val).split(";") if v.strip()}
 
 def jaccard(set_a: set, set_b: set) -> float:
     if not set_a or not set_b:
@@ -83,8 +155,7 @@ def jaccard(set_a: set, set_b: set) -> float:
     return inter / union if union > 0 else 0.0
 
 def roles_complementarios(rol_a: str, rol_b: str) -> bool:
-    par = {rol_a.strip(), rol_b.strip()}
-    return any(par == c for c in ROLES_COMPLEMENTARIOS)
+    return any({rol_a.strip(), rol_b.strip()} == c for c in ROLES_COMPLEMENTARIOS)
 
 def calcular_score(a: dict, b: dict) -> float:
     ofrece_a = parsear_multivalor(a.get("ofrece", ""))
@@ -98,9 +169,7 @@ def calcular_score(a: dict, b: dict) -> float:
         W_BUSCA_OFRECE * jaccard(ofrece_b, busca_a) +
         W_ROL          * (1.0 if roles_complementarios(rol_a, rol_b) else 0.0)
     )
-    empresa_a = str(a.get("empresa", "")).strip().lower()
-    empresa_b = str(b.get("empresa", "")).strip().lower()
-    if empresa_a and empresa_a == empresa_b:
+    if str(a.get("empresa","")).strip().lower() == str(b.get("empresa","")).strip().lower() != "":
         s *= 0.1
     return round(min(s * 100, 100), 1)
 
@@ -116,15 +185,30 @@ def razon_match(a: dict, b: dict) -> str:
     comun    = ofrece_b & busca_a
     if comun:
         item = next(iter(comun))
-        return f"{b.get('nombres', '')} ofrece '{item}', que es exactamente lo que buscas en este evento."
-    if roles_complementarios(str(a.get("rol", "")), str(b.get("rol", ""))):
+        labels = {
+            "fruta_banana":      "fruta fresca (banano / plátano)",
+            "insumos_agricolas": "insumos agrícolas",
+            "maquinaria_equipos":"maquinaria y equipos",
+            "compradores":       "compradores de producto",
+            "alianzas":          "alianzas comerciales",
+            "aprendizaje":       "formación y actualización",
+            "networking":        "networking",
+            "certificaciones":   "certificaciones y auditoría",
+            "sostenibilidad":    "sostenibilidad / ESG",
+            "exportacion":       "exportación y comercialización",
+            "consultoria":       "consultoría técnica",
+            "tecnologia":        "soluciones tecnológicas",
+            "financiero":        "productos financieros",
+            "formacion":         "investigación y transferencia",
+            "logistica":         "logística y transporte",
+        }
+        label = labels.get(item, item)
+        return f"{b.get('nombres', '')} ofrece '{label}', que es exactamente lo que buscas."
+    if roles_complementarios(str(a.get("rol","")), str(b.get("rol",""))):
         return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en la cadena bananera."
     return "Perfil estratégico con potencial de colaboración en el sector bananero."
 
 def buscar_columna(row: dict, *candidatos) -> str:
-    import unicodedata
-    def nk(k):
-        return unicodedata.normalize("NFKD", k.lower().strip()).encode("ascii", "ignore").decode("ascii")
     rn = {nk(k): v for k, v in row.items()}
     for c in candidatos:
         v = rn.get(nk(c))
@@ -137,33 +221,49 @@ def leer_participantes(ss) -> list:
         sheet = ss.worksheet(SHEET_REGISTROS)
     except Exception:
         raise HTTPException(status_code=500, detail=f"Hoja '{SHEET_REGISTROS}' no encontrada")
-    records = sheet.get_all_records()
     result = []
-    for r in records:
+    for r in sheet.get_all_records():
+        # Soporte cabeceras limpias (nuevas) Y originales (antiguas) simultáneamente
         tel_raw = buscar_columna(r,
-            "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil", "celular", "tel")
+            # Cabeceras limpias (nuevas sin tildes)
+            "telefono",
+            # Cabeceras originales
+            "Teléfono móvil", "Telefono movil", "móvil", "movil", "celular", "tel"
+        )
         result.append({
-            "telefono" : normalizar(tel_raw),
-            "nombres"  : buscar_columna(r, "Nombres", "nombres", "nombre"),
-            "apellidos": buscar_columna(r, "Apellidos", "apellidos", "apellido"),
-            "email"    : buscar_columna(r, "Email", "email", "correo"),
-            "empresa"  : buscar_columna(r, "Empresa/Institución", "Empresa/Institucion", "empresa", "institucion"),
-            "cargo"    : buscar_columna(r, "Cargo", "cargo"),
+            "telefono" : normalizar_tel(tel_raw),
+            "nombres"  : buscar_columna(r, "nombres", "Nombres", "nombre"),
+            "apellidos": buscar_columna(r, "apellidos", "Apellidos", "apellido"),
+            "email"    : buscar_columna(r, "email", "Email", "correo"),
+            "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución", "Empresa/Institucion", "institucion"),
+            "cargo"    : buscar_columna(r, "cargo", "Cargo"),
             "rol"      : buscar_columna(r,
+                # Cabecera limpia nueva
+                "rolcadena",
+                # Cabeceras originales
                 "¿Cual es tu rol principal en la cadena de valor del banano?",
                 "Cual es tu rol principal en la cadena de valor del banano?",
-                "rol principal", "rol"),
+                "rol principal", "rol"
+            ),
             "busca"    : buscar_columna(r,
+                # Cabecera limpia nueva
+                "busca",
+                # Cabeceras originales
                 "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
                 "En este evento, que estas buscando principalmente? (maximo 3 opciones)",
                 "En este evento, ¿qué estás buscando principalmente?",
-                "busca", "buscando"),
+                "buscando"
+            ),
             "ofrece"   : buscar_columna(r,
+                # Cabecera limpia nueva
+                "ofrece",
+                # Cabeceras originales
                 "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
                 "Que ofreces a otros participantes del evento? (maximo 3 opciones)",
                 "¿Qué ofreces a otros participantes del evento?",
-                "ofrece", "ofreces"),
-            "tipo"     : buscar_columna(r, "Tipo entrada", "tipo entrada", "tipo"),
+                "ofreces"
+            ),
+            "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada", "tipo entrada"),
         })
     return result
 
@@ -208,7 +308,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.2 activa", "version": "2.2.0"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.0 activa", "version": "2.5.0"}
 
 @app.get("/health")
 def health():
@@ -220,38 +320,80 @@ def debug():
     ss = gc.open_by_key(SPREADSHEET_ID)
     try:
         sheet = ss.worksheet(SHEET_REGISTROS)
+        records = sheet.get_all_records()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    records = sheet.get_all_records()
     if not records:
         return {"columnas": [], "muestra_raw": {}, "muestra_mapeada": {}}
     participantes = leer_participantes(ss)
+    m = participantes[0] if participantes else {}
     return {
         "total_registros" : len(records),
         "columnas"        : list(records[0].keys()),
         "muestra_raw"     : records[0],
-        "muestra_mapeada" : participantes[0] if participantes else {},
+        "muestra_mapeada" : m,
+        "sets_canonicos"  : {
+            "busca" : list(parsear_multivalor(m.get("busca", ""))),
+            "ofrece": list(parsear_multivalor(m.get("ofrece", ""))),
+        }
+    }
+
+@app.get("/debug-user/{movil}")
+def debug_user(movil: str):
+    gc = get_sheets_client()
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    participantes = leer_participantes(ss)
+    movil_norm = normalizar_tel(movil)
+    usuario = next((p for p in participantes if p["telefono"] == movil_norm), None)
+    if not usuario:
+        raise HTTPException(status_code=404, detail=f"No encontrado: {movil}")
+    busca_set  = parsear_multivalor(usuario.get("busca",  ""))
+    ofrece_set = parsear_multivalor(usuario.get("ofrece", ""))
+    candidatos = [p for p in participantes if p["telefono"] != movil_norm]
+    scores_debug = []
+    for c in candidatos:
+        ofrece_c = parsear_multivalor(c.get("ofrece", ""))
+        busca_c  = parsear_multivalor(c.get("busca",  ""))
+        j1 = jaccard(ofrece_set, busca_c)
+        j2 = jaccard(ofrece_c, busca_set)
+        rol_ok = roles_complementarios(str(usuario.get("rol","")), str(c.get("rol","")))
+        score  = calcular_score(usuario, c)
+        scores_debug.append({
+            "nombre"         : nombre_completo(c["nombres"], c["apellidos"]),
+            "empresa"        : c["empresa"],
+            "score"          : score,
+            "j_ofrece_busca" : round(j1, 3),
+            "j_busca_ofrece" : round(j2, 3),
+            "rol_ok"         : rol_ok,
+            "ofrece_c"       : list(ofrece_c),
+            "busca_c"        : list(busca_c),
+        })
+    scores_debug.sort(key=lambda x: x["score"], reverse=True)
+    return {
+        "usuario"      : nombre_completo(usuario["nombres"], usuario["apellidos"]),
+        "rol"          : usuario.get("rol"),
+        "busca_raw"    : usuario.get("busca"),
+        "ofrece_raw"   : usuario.get("ofrece"),
+        "busca_canon"  : list(busca_set),
+        "ofrece_canon" : list(ofrece_set),
+        "top10_scores" : scores_debug[:10],
     }
 
 @app.post("/clear-history")
 def clear_history(req: ClearRequest):
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
-    movil_norm = normalizar(req.movil)
+    movil_norm = normalizar_tel(req.movil)
     try:
         sheet = ss.worksheet(SHEET_HISTORIA)
         records = sheet.get_all_records()
     except Exception:
-        return {"status": "ok", "mensaje": "Hoja MatchHistoria no existe o vacía, nada que borrar."}
-    fila_a_borrar = None
+        return {"status": "ok", "mensaje": "Hoja MatchHistoria no existe, nada que borrar."}
     for i, row in enumerate(records):
-        if normalizar(str(row.get("Movil", ""))) == movil_norm:
-            fila_a_borrar = i + 2
-            break
-    if fila_a_borrar is None:
-        return {"status": "ok", "mensaje": f"No se encontró historial para {req.movil}"}
-    sheet.delete_rows(fila_a_borrar)
-    return {"status": "ok", "mensaje": f"Historial de {req.movil} eliminado. Próxima consulta recalculará."}
+        if normalizar_tel(str(row.get("Movil", ""))) == movil_norm:
+            sheet.delete_rows(i + 2)
+            return {"status": "ok", "mensaje": f"Historial de {req.movil} eliminado."}
+    return {"status": "ok", "mensaje": f"No se encontró historial para {req.movil}"}
 
 @app.post("/clear-all-history")
 def clear_all_history():
@@ -263,7 +405,7 @@ def clear_all_history():
         sheet.append_row(["Movil", "FechaConsulta", "MatchesJSON", "VecesConsultado"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    return {"status": "ok", "mensaje": "Historial completo eliminado. Todos recalcularán en su próxima consulta."}
+    return {"status": "ok", "mensaje": "Historial completo eliminado."}
 
 @app.post("/match", response_model=MatchResponse)
 def match(req: MatchRequest):
@@ -271,30 +413,27 @@ def match(req: MatchRequest):
         raise HTTPException(status_code=400, detail="Campo 'movil' es requerido")
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
-    movil_norm = normalizar(req.movil)
-
+    movil_norm = normalizar_tel(req.movil)
     matches_guardados = obtener_historial(movil_norm, ss)
     if matches_guardados:
         incrementar_contador(movil_norm, ss)
         participantes = leer_participantes(ss)
-        usuario_row = next((p for p in participantes if p["telefono"] == movil_norm), None)
-        nombre_u = nombre_completo(usuario_row["nombres"], usuario_row["apellidos"]) if usuario_row else req.movil
+        u = next((p for p in participantes if p["telefono"] == movil_norm), None)
+        nombre_u = nombre_completo(u["nombres"], u["apellidos"]) if u else req.movil
         return MatchResponse(status="ok", fuente="historial", usuario=nombre_u,
             matches=matches_guardados, mensaje=formatear_mensaje(nombre_u, matches_guardados))
-
     participantes = leer_participantes(ss)
     usuario_row = next((p for p in participantes if p["telefono"] == movil_norm), None)
     if not usuario_row:
         raise HTTPException(status_code=404, detail=f"No se encontró usuario con móvil {req.movil}")
-
-    candidatos = [p for p in participantes if p["telefono"] != movil_norm]
     empresa_mejor: dict = {}
-    for c in candidatos:
+    for c in participantes:
+        if c["telefono"] == movil_norm:
+            continue
         score = calcular_score(usuario_row, c)
         emp = str(c.get("empresa", "")).strip().lower()
         if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
             empresa_mejor[emp] = (score, c)
-
     scored = sorted(empresa_mejor.values(), key=lambda x: x[0], reverse=True)
     matches = [
         MatchResult(
@@ -304,12 +443,10 @@ def match(req: MatchRequest):
         )
         for i, (score, c) in enumerate(scored[:DEFAULT_TOP_N])
     ]
-
     guardar_historial(movil_norm, matches, ss)
     nombre_u = nombre_completo(usuario_row["nombres"], usuario_row["apellidos"])
     return MatchResponse(status="ok", fuente="nuevo", usuario=nombre_u,
         matches=matches, mensaje=formatear_mensaje(nombre_u, matches))
-
 
 @app.post("/batch-match", response_model=BatchResponse)
 def batch_match(req: BatchRequest):
@@ -318,23 +455,33 @@ def batch_match(req: BatchRequest):
     top_n = req.top_n or DEFAULT_TOP_N
     participantes = leer_participantes(ss) if not req.registros else [
         {
-            "telefono" : normalizar(buscar_columna(r, "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil")),
-            "nombres"  : buscar_columna(r, "Nombres", "nombres"),
-            "apellidos": buscar_columna(r, "Apellidos", "apellidos"),
-            "email"    : buscar_columna(r, "Email", "email"),
-            "empresa"  : buscar_columna(r, "Empresa/Institución", "empresa"),
-            "cargo"    : buscar_columna(r, "Cargo", "cargo"),
-            "rol"      : buscar_columna(r, "¿Cual es tu rol principal en la cadena de valor del banano?", "rol"),
-            "busca"    : buscar_columna(r, "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ", "busca"),
-            "ofrece"   : buscar_columna(r, "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)", "ofrece"),
-            "tipo"     : buscar_columna(r, "Tipo entrada", "tipo"),
+            "telefono" : normalizar_tel(buscar_columna(r,
+                "telefono", "Teléfono móvil", "Telefono movil", "móvil", "movil")),
+            "nombres"  : buscar_columna(r, "nombres", "Nombres"),
+            "apellidos": buscar_columna(r, "apellidos", "Apellidos"),
+            "email"    : buscar_columna(r, "email", "Email"),
+            "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución"),
+            "cargo"    : buscar_columna(r, "cargo", "Cargo"),
+            "rol"      : buscar_columna(r,
+                "rolcadena",
+                "¿Cual es tu rol principal en la cadena de valor del banano?",
+                "rol"),
+            "busca"    : buscar_columna(r,
+                "busca",
+                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
+                "buscando"),
+            "ofrece"   : buscar_columna(r,
+                "ofrece",
+                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
+                "ofreces"),
+            "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada"),
         } for r in req.registros
     ]
     if not participantes:
         raise HTTPException(status_code=400, detail="No hay participantes")
     df = pd.DataFrame(participantes)
     all_matches = []
-    for i, usuario in df.iterrows():
+    for _, usuario in df.iterrows():
         empresa_mejor: dict = {}
         for _, c in df[df["telefono"] != usuario["telefono"]].iterrows():
             score = calcular_score(usuario.to_dict(), c.to_dict())
@@ -372,7 +519,7 @@ def obtener_historial(movil_norm, ss):
     except Exception:
         return None
     for row in records:
-        if normalizar(str(row.get("Movil", ""))) == movil_norm:
+        if normalizar_tel(str(row.get("Movil", ""))) == movil_norm:
             try:
                 return [MatchResult(**m) for m in json.loads(row.get("MatchesJSON", "[]"))]
             except Exception:
@@ -391,9 +538,8 @@ def guardar_historial(movil_norm, matches, ss):
 def incrementar_contador(movil_norm, ss):
     try:
         sheet = ss.worksheet(SHEET_HISTORIA)
-        records = sheet.get_all_records()
-        for i, row in enumerate(records):
-            if normalizar(str(row.get("Movil", ""))) == movil_norm:
+        for i, row in enumerate(sheet.get_all_records()):
+            if normalizar_tel(str(row.get("Movil", ""))) == movil_norm:
                 sheet.update_cell(i+2, 4, int(row.get("VecesConsultado", 1))+1)
                 return
     except Exception:
