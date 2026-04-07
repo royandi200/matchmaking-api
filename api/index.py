@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.5.1"
+    version="2.5.2"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -35,15 +35,6 @@ ROLES_COMPLEMENTARIOS = [
     {"Productor / Finca", "Academia / centro de investigación"},
     {"Proveedor de insumos agrícolas", "Consultoría / servicios técnicos"},
     {"Academia / centro de investigación", "Proveedor de insumos agrícolas"},
-    # Versiones sin tildes (cabeceras limpias)
-    {"Productor / Finca", "Proveedor de insumos agricolas"},
-    {"Productor / Finca", "Proveedor de maquinaria / tecnologia"},
-    {"Productor / Finca", "Empresa de logistica / transporte / puerto"},
-    {"Productor / Finca", "Empresa de certificacion / auditoria"},
-    {"Productor / Finca", "Consultoria / servicios tecnicos"},
-    {"Productor / Finca", "Academia / centro de investigacion"},
-    {"Proveedor de insumos agricolas", "Consultoria / servicios tecnicos"},
-    {"Academia / centro de investigacion", "Proveedor de insumos agricolas"},
 ]
 
 NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
@@ -95,10 +86,19 @@ CANON_RULES: list[tuple[list[str], str]] = [
 
 
 def nk(k: str) -> str:
+    """Quita tildes, minúsculas, strip — conserva espacios."""
     s = unicodedata.normalize("NFKD", str(k))
     s = s.encode("ascii", "ignore").decode("ascii")
-    s = re.sub(r"[^\w\s/]", " ", s)
-    return s.lower().strip()
+    s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def nk_compact(k: str) -> str:
+    """Sin espacios — para comparar nombres de columnas del Sheet.
+    rol_cadena / Rol Cadena / rolcadena / ROL CADENA → 'rolcadena'
+    tipo_entrada / Tipo Entrada / tipoentrada      → 'tipoentrada'
+    """
+    return re.sub(r"\s+", "", nk(k))
 
 
 def canonicalizar(val: str) -> str:
@@ -110,16 +110,14 @@ def canonicalizar(val: str) -> str:
 
 
 def parsear_multivalor(val: str) -> set:
-    """Acepta ; o , o \n como separadores (Google Forms puede usar cualquiera)."""
+    """Acepta ; o , o \n como separadores."""
     if not val or str(val).strip() in ("", "nan", "None"):
         return set()
     raw = str(val)
-    # Detectar separador dominante
     if ";" in raw:
         items = raw.split(";")
     elif "," in raw:
-        # Evitar partir en comas dentro de una frase corta (< 2 comas = probablemente 1 ítem)
-        items = raw.split(",") if raw.count(",") >= 1 else [raw]
+        items = raw.split(",")
     else:
         items = raw.split("\n")
     items = {v.strip() for v in items if v.strip()}
@@ -152,7 +150,14 @@ def jaccard(set_a: set, set_b: set) -> float:
     return inter / union if union > 0 else 0.0
 
 def roles_complementarios(rol_a: str, rol_b: str) -> bool:
-    return any({rol_a.strip(), rol_b.strip()} == c for c in ROLES_COMPLEMENTARIOS)
+    """Compara roles usando nk() — tolera tildes, mayúsculas y variantes."""
+    ra = nk(rol_a.strip())
+    rb = nk(rol_b.strip())
+    for pair in ROLES_COMPLEMENTARIOS:
+        pa, pb = [nk(x) for x in pair]
+        if (ra == pa and rb == pb) or (ra == pb and rb == pa):
+            return True
+    return False
 
 def calcular_score(a: dict, b: dict) -> float:
     ofrece_a = parsear_multivalor(a.get("ofrece", ""))
@@ -205,13 +210,19 @@ def razon_match(a: dict, b: dict) -> str:
         return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en la cadena bananera."
     return "Perfil estratégico con potencial de colaboración en el sector bananero."
 
+
 def buscar_columna(row: dict, *candidatos) -> str:
-    rn = {nk(k): v for k, v in row.items()}
+    """Usa nk_compact para tolerar guiones bajos, espacios, tildes y mayúsculas
+    en los nombres de columna del Sheet.
+    Ej: 'rol_cadena' == 'rolcadena' == 'Rol Cadena' == 'ROL CADENA'
+    """
+    rn = {nk_compact(k): v for k, v in row.items()}
     for c in candidatos:
-        v = rn.get(nk(c))
+        v = rn.get(nk_compact(c))
         if v is not None:
             return str(v)
     return ""
+
 
 def leer_participantes(ss) -> list:
     try:
@@ -221,37 +232,36 @@ def leer_participantes(ss) -> list:
     result = []
     for r in sheet.get_all_records():
         tel_raw = buscar_columna(r,
-            "telefono",
-            "Teléfono móvil", "Telefono movil", "móvil", "movil", "celular", "tel"
+            "telefono", "telefono movil", "movil", "celular", "tel"
         )
         result.append({
             "telefono" : normalizar_tel(tel_raw),
-            "nombres"  : buscar_columna(r, "nombres", "Nombres", "nombre"),
-            "apellidos": buscar_columna(r, "apellidos", "Apellidos", "apellido"),
-            "email"    : buscar_columna(r, "email", "Email", "correo"),
-            "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución", "Empresa/Institucion", "institucion"),
-            "cargo"    : buscar_columna(r, "cargo", "Cargo"),
+            "nombres"  : buscar_columna(r, "nombres", "nombre"),
+            "apellidos": buscar_columna(r, "apellidos", "apellido"),
+            "email"    : buscar_columna(r, "email", "correo"),
+            "empresa"  : buscar_columna(r, "empresa", "empresa institucion", "institucion"),
+            "cargo"    : buscar_columna(r, "cargo"),
             "rol"      : buscar_columna(r,
+                "rol cadena",    # rol_cadena  → nk_compact → 'rolcadena' ✓
                 "rolcadena",
-                "¿Cual es tu rol principal en la cadena de valor del banano?",
-                "Cual es tu rol principal en la cadena de valor del banano?",
-                "rol principal", "rol"
+                "rol principal",
+                "rol"
             ),
             "busca"    : buscar_columna(r,
                 "busca",
-                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
-                "En este evento, que estas buscando principalmente? (maximo 3 opciones)",
-                "En este evento, ¿qué estás buscando principalmente?",
+                "en este evento que estas buscando principalmente maximo 3 opciones",
                 "buscando"
             ),
             "ofrece"   : buscar_columna(r,
                 "ofrece",
-                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
-                "Que ofreces a otros participantes del evento? (maximo 3 opciones)",
-                "¿Qué ofreces a otros participantes del evento?",
+                "que ofreces a otros participantes del evento maximo 3 opciones",
                 "ofreces"
             ),
-            "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada", "tipo entrada"),
+            "tipo"     : buscar_columna(r,
+                "tipo entrada",  # tipo_entrada → nk_compact → 'tipoentrada' ✓
+                "tipoentrada",
+                "tipo"
+            ),
         })
     return result
 
@@ -296,7 +306,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.1 activa", "version": "2.5.1"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.2 activa", "version": "2.5.2"}
 
 @app.get("/health")
 def health():
@@ -342,17 +352,15 @@ def debug_user(movil: str):
     for c in candidatos:
         ofrece_c = parsear_multivalor(c.get("ofrece", ""))
         busca_c  = parsear_multivalor(c.get("busca",  ""))
-        j1 = jaccard(ofrece_set, busca_c)
-        j2 = jaccard(ofrece_c, busca_set)
-        rol_ok = roles_complementarios(str(usuario.get("rol","")), str(c.get("rol","")))
         score  = calcular_score(usuario, c)
         scores_debug.append({
             "nombre"         : nombre_completo(c["nombres"], c["apellidos"]),
             "empresa"        : c["empresa"],
+            "rol"            : c.get("rol", ""),
             "score"          : score,
-            "j_ofrece_busca" : round(j1, 3),
-            "j_busca_ofrece" : round(j2, 3),
-            "rol_ok"         : rol_ok,
+            "j_ofrece_busca" : round(jaccard(ofrece_set, busca_c), 3),
+            "j_busca_ofrece" : round(jaccard(ofrece_c, busca_set), 3),
+            "rol_ok"         : roles_complementarios(str(usuario.get("rol","")), str(c.get("rol",""))),
             "ofrece_c"       : list(ofrece_c),
             "busca_c"        : list(busca_c),
             "busca_raw"      : c.get("busca", ""),
@@ -445,26 +453,16 @@ def batch_match(req: BatchRequest):
     top_n = req.top_n or DEFAULT_TOP_N
     participantes = leer_participantes(ss) if not req.registros else [
         {
-            "telefono" : normalizar_tel(buscar_columna(r,
-                "telefono", "Teléfono móvil", "Telefono movil", "móvil", "movil")),
-            "nombres"  : buscar_columna(r, "nombres", "Nombres"),
-            "apellidos": buscar_columna(r, "apellidos", "Apellidos"),
-            "email"    : buscar_columna(r, "email", "Email"),
-            "empresa"  : buscar_columna(r, "empresa", "Empresa/Institución"),
-            "cargo"    : buscar_columna(r, "cargo", "Cargo"),
-            "rol"      : buscar_columna(r,
-                "rolcadena",
-                "¿Cual es tu rol principal en la cadena de valor del banano?",
-                "rol"),
-            "busca"    : buscar_columna(r,
-                "busca",
-                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
-                "buscando"),
-            "ofrece"   : buscar_columna(r,
-                "ofrece",
-                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
-                "ofreces"),
-            "tipo"     : buscar_columna(r, "tipoentrada", "tipo", "Tipo entrada"),
+            "telefono" : normalizar_tel(buscar_columna(r, "telefono", "telefono movil", "movil")),
+            "nombres"  : buscar_columna(r, "nombres", "nombre"),
+            "apellidos": buscar_columna(r, "apellidos", "apellido"),
+            "email"    : buscar_columna(r, "email", "correo"),
+            "empresa"  : buscar_columna(r, "empresa", "empresa institucion"),
+            "cargo"    : buscar_columna(r, "cargo"),
+            "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol"),
+            "busca"    : buscar_columna(r, "busca", "buscando"),
+            "ofrece"   : buscar_columna(r, "ofrece", "ofreces"),
+            "tipo"     : buscar_columna(r, "tipo entrada", "tipoentrada", "tipo"),
         } for r in req.registros
     ]
     if not participantes:
