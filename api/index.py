@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.5.2"
+    version="2.5.3"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -242,7 +242,7 @@ def leer_participantes(ss) -> list:
             "empresa"  : buscar_columna(r, "empresa", "empresa institucion", "institucion"),
             "cargo"    : buscar_columna(r, "cargo"),
             "rol"      : buscar_columna(r,
-                "rol cadena",    # rol_cadena  → nk_compact → 'rolcadena' ✓
+                "rol cadena",
                 "rolcadena",
                 "rol principal",
                 "rol"
@@ -258,12 +258,28 @@ def leer_participantes(ss) -> list:
                 "ofreces"
             ),
             "tipo"     : buscar_columna(r,
-                "tipo entrada",  # tipo_entrada → nk_compact → 'tipoentrada' ✓
+                "tipo entrada",
                 "tipoentrada",
                 "tipo"
             ),
         })
     return result
+
+
+def mapear_registro(r: dict) -> dict:
+    """Mapea un registro crudo (de Apps Script) al formato interno."""
+    return {
+        "telefono" : normalizar_tel(buscar_columna(r, "telefono", "telefono movil", "movil")),
+        "nombres"  : buscar_columna(r, "nombres", "nombre"),
+        "apellidos": buscar_columna(r, "apellidos", "apellido"),
+        "email"    : buscar_columna(r, "email", "correo"),
+        "empresa"  : buscar_columna(r, "empresa", "empresa institucion"),
+        "cargo"    : buscar_columna(r, "cargo"),
+        "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol"),
+        "busca"    : buscar_columna(r, "busca", "buscando"),
+        "ofrece"   : buscar_columna(r, "ofrece", "ofreces"),
+        "tipo"     : buscar_columna(r, "tipo entrada", "tipoentrada", "tipo"),
+    }
 
 
 # ─── Pydantic
@@ -274,7 +290,8 @@ class ClearRequest(BaseModel):
     movil: str
 
 class BatchRequest(BaseModel):
-    registros: Optional[List[dict]] = None
+    registros: Optional[List[dict]] = None   # lote a procesar (puede ser subconjunto)
+    todos: Optional[List[dict]] = None        # base completa para matchear contra ella
     top_n: Optional[int] = DEFAULT_TOP_N
 
 class MatchResult(BaseModel):
@@ -306,7 +323,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.2 activa", "version": "2.5.2"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.3 activa", "version": "2.5.3"}
 
 @app.get("/health")
 def health():
@@ -448,30 +465,39 @@ def match(req: MatchRequest):
 
 @app.post("/batch-match", response_model=BatchResponse)
 def batch_match(req: BatchRequest):
+    """
+    Soporta dos modos:
+    1. Sin registros ni todos → lee todo del Sheet y procesa completo (hasta ~70 participantes)
+    2. Con registros + todos  → procesa solo el lote (registros) contra la base completa (todos)
+       Permite partir 1000 participantes en lotes de 50 desde Apps Script sin timeout.
+       Resultado idéntico al modo completo.
+    """
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
     top_n = req.top_n or DEFAULT_TOP_N
-    participantes = leer_participantes(ss) if not req.registros else [
-        {
-            "telefono" : normalizar_tel(buscar_columna(r, "telefono", "telefono movil", "movil")),
-            "nombres"  : buscar_columna(r, "nombres", "nombre"),
-            "apellidos": buscar_columna(r, "apellidos", "apellido"),
-            "email"    : buscar_columna(r, "email", "correo"),
-            "empresa"  : buscar_columna(r, "empresa", "empresa institucion"),
-            "cargo"    : buscar_columna(r, "cargo"),
-            "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol"),
-            "busca"    : buscar_columna(r, "busca", "buscando"),
-            "ofrece"   : buscar_columna(r, "ofrece", "ofreces"),
-            "tipo"     : buscar_columna(r, "tipo entrada", "tipoentrada", "tipo"),
-        } for r in req.registros
-    ]
-    if not participantes:
+
+    # Modo lote: registros = lote a procesar, todos = base completa
+    if req.registros and req.todos:
+        lote = [mapear_registro(r) for r in req.registros]
+        base = [mapear_registro(r) for r in req.todos]
+    # Modo completo: lee todo del Sheet
+    elif req.registros and not req.todos:
+        lote = [mapear_registro(r) for r in req.registros]
+        base = lote
+    else:
+        lote = leer_participantes(ss)
+        base = lote
+
+    if not lote or not base:
         raise HTTPException(status_code=400, detail="No hay participantes")
-    df = pd.DataFrame(participantes)
+
+    df_lote = pd.DataFrame(lote)
+    df_base = pd.DataFrame(base)
+
     all_matches = []
-    for _, usuario in df.iterrows():
+    for _, usuario in df_lote.iterrows():
         empresa_mejor: dict = {}
-        for _, c in df[df["telefono"] != usuario["telefono"]].iterrows():
+        for _, c in df_base[df_base["telefono"] != usuario["telefono"]].iterrows():
             score = calcular_score(usuario.to_dict(), c.to_dict())
             emp = str(c.get("empresa", "")).strip().lower()
             if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
@@ -485,20 +511,28 @@ def batch_match(req: BatchRequest):
                 "email_match": c["email"], "empresa_match": c["empresa"], "cargo_match": c["cargo"],
                 "score": score, "nivel": nivel_desde_score(score), "razon": razon_match(usuario.to_dict(), c),
             })
-    try:
+
+    # Solo escribe al Sheet cuando es el modo completo (sin lotes)
+    if not req.todos:
         try:
-            sheet_res = ss.worksheet(SHEET_RESULTADOS)
-            sheet_res.clear()
+            try:
+                sheet_res = ss.worksheet(SHEET_RESULTADOS)
+                sheet_res.clear()
+            except Exception:
+                sheet_res = ss.add_worksheet(title=SHEET_RESULTADOS, rows=str(len(all_matches)+10), cols="15")
+            if all_matches:
+                headers = list(all_matches[0].keys())
+                sheet_res.update([headers] + [[m.get(h, "") for h in headers] for m in all_matches], "A1")
         except Exception:
-            sheet_res = ss.add_worksheet(title=SHEET_RESULTADOS, rows=str(len(all_matches)+10), cols="15")
-        if all_matches:
-            headers = list(all_matches[0].keys())
-            sheet_res.update([headers] + [[m.get(h, "") for h in headers] for m in all_matches], "A1")
-    except Exception:
-        pass
-    return BatchResponse(status="ok", total_usuarios=len(participantes), total_matches=len(all_matches),
+            pass
+
+    return BatchResponse(
+        status="ok",
+        total_usuarios=len(lote),
+        total_matches=len(all_matches),
         matches=all_matches,
-        mensaje=f"Modelo corrido: {len(participantes)} participantes × top-{top_n}. Resultados en '{SHEET_RESULTADOS}'.")
+        mensaje=f"Lote procesado: {len(lote)} usuarios × top-{top_n}."
+    )
 
 
 def obtener_historial(movil_norm, ss):
