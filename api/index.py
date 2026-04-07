@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ASBAMA 2026",
     description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.3.0"
+    version="2.3.1"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -39,30 +39,27 @@ ROLES_COMPLEMENTARIOS = [
 
 NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
 
-# ─── Mapa canónico ───────────────────────────────────────────────────────────────────────────────
-# Normaliza variaciones de redacción a categorías canónicas compartidas
 CANON_MAP = {
-    # Productos / fruta
+    # Fruta
     "fruta fresca":                                "fruta_banana",
     "fruta fresca (banano / platano)":             "fruta_banana",
-    "fruta fresca (banano / plátano)":            "fruta_banana",
+    "fruta fresca (banano / pl\u00e1tano)":           "fruta_banana",
     # Insumos
     "insumos agricolas":                           "insumos_agricolas",
-    "insumos agrícolas (fertilizantes, agroquimicos, bioinsumos)": "insumos_agricolas",
-    "insumos agrícolas (fertilizantes, agroquímicos, bioinsumos)": "insumos_agricolas",
+    "insumos agr\u00edcolas (fertilizantes, agroquimicos, bioinsumos)": "insumos_agricolas",
+    "insumos agr\u00edcolas (fertilizantes, agroqu\u00edmicos, bioinsumos)": "insumos_agricolas",
     "proveedores de insumos o servicios":          "insumos_agricolas",
     "proveedores de insumos":                      "insumos_agricolas",
     # Maquinaria
     "maquinaria y equipos (riego, empaque, postcosecha, etc.)": "maquinaria_equipos",
     "maquinaria y equipos":                        "maquinaria_equipos",
     "maquinaria":                                  "maquinaria_equipos",
-    # Compradores / clientes
-    "compradores de mi producto/servicio":         "compradores",
+    # Compradores
     "compradores de mi producto/servicio":         "compradores",
     "compradores de mi producto":                  "compradores",
     # Alianzas
     "alianzas comerciales o estrategicas":         "alianzas",
-    "alianzas comerciales o estratégicas":        "alianzas",
+    "alianzas comerciales o estrat\u00e9gicas":       "alianzas",
     "alianzas":                                    "alianzas",
     # Aprendizaje
     "aprender / actualizarme sobre el sector":     "aprendizaje",
@@ -73,46 +70,44 @@ CANON_MAP = {
     "networking":                                  "networking",
     # Certificaciones
     "informacion sobre certificaciones y normativas": "certificaciones",
-    "información sobre certificaciones y normativas": "certificaciones",
+    "informaci\u00f3n sobre certificaciones y normativas": "certificaciones",
     "servicios de certificacion / auditoria":      "certificaciones",
-    "servicios de certificación / auditoría":    "certificaciones",
+    "servicios de certificaci\u00f3n / auditor\u00eda":   "certificaciones",
     # Sostenibilidad
     "contactos para proyectos de sostenibilidad":  "sostenibilidad",
     "programas / proyectos de sostenibilidad y esg": "sostenibilidad",
     "programas/proyectos de sostenibilidad":       "sostenibilidad",
     # Exportacion
     "servicios de exportacion / comercializacion": "exportacion",
-    "servicios de exportación / comercialización": "exportacion",
+    "servicios de exportaci\u00f3n / comercializaci\u00f3n": "exportacion",
     # Consultoria
     "consultoria / servicios tecnicos":            "consultoria",
-    "consultoría / servicios técnicos":          "consultoria",
+    "consultor\u00eda / servicios t\u00e9cnicos":         "consultoria",
     "servicios de consultoria tecnica o de gestion": "consultoria",
-    "servicios de consultoría técnica o de gestión": "consultoria",
+    "servicios de consultor\u00eda t\u00e9cnica o de gesti\u00f3n": "consultoria",
     # Tecnologia
     "soluciones tecnologicas e innovacion":        "tecnologia",
-    "soluciones tecnológicas e innovación":       "tecnologia",
+    "soluciones tecnol\u00f3gicas e innovaci\u00f3n":      "tecnologia",
     # Financiero
     "productos o servicios financieros / seguros": "financiero",
     "productos o servicios financieros":           "financiero",
     # Formacion
     "formacion / investigacion / transferencia de conocimiento": "formacion",
-    "formación / investigación / transferencia de conocimiento": "formacion",
-    # Logística
+    "formaci\u00f3n / investigaci\u00f3n / transferencia de conocimiento": "formacion",
+    # Log\u00edstica
     "empresa de logistica / transporte / puerto":  "logistica",
-    "empresa de logística / transporte / puerto": "logistica",
+    "empresa de log\u00edstica / transporte / puerto": "logistica",
+    # Otro
+    "otro":                                        "otro",
 }
 
 
 def nk(k: str) -> str:
-    """Normaliza una clave: lower, strip, quitar tildes."""
     return unicodedata.normalize("NFKD", str(k).lower().strip()).encode("ascii", "ignore").decode("ascii")
 
-
 def canonicalizar(val: str) -> str:
-    """Devuelve la categoría canónica si existe, si no devuelve el valor normalizado."""
     k = nk(val)
     return CANON_MAP.get(k, k)
-
 
 def parsear_multivalor(val: str) -> set:
     if not val or str(val).strip() in ("", "nan", "None"):
@@ -120,8 +115,6 @@ def parsear_multivalor(val: str) -> set:
     items = {v.strip() for v in str(val).split(";") if v.strip()}
     return {canonicalizar(i) for i in items}
 
-
-# ─── Sheets client
 def get_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS", "")
     if not creds_json:
@@ -129,8 +122,6 @@ def get_sheets_client():
     creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
     return gspread.authorize(creds)
 
-
-# ─── Helpers
 def normalizar_tel(val) -> str:
     return "".join(filter(str.isdigit, str(val)))
 
@@ -177,8 +168,8 @@ def razon_match(a: dict, b: dict) -> str:
         item = next(iter(comun))
         return f"{b.get('nombres', '')} ofrece lo que buscas: '{item}'."
     if roles_complementarios(str(a.get("rol","")), str(b.get("rol",""))):
-        return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en la cadena bananera."
-    return "Perfil estratégico con potencial de colaboración en el sector bananero."
+        return f"Roles complementarios: {a.get('rol','')} \u2194 {b.get('rol','')}, alta sinergia en la cadena bananera."
+    return "Perfil estrat\u00e9gico con potencial de colaboraci\u00f3n en el sector bananero."
 
 def buscar_columna(row: dict, *candidatos) -> str:
     rn = {nk(k): v for k, v in row.items()}
@@ -195,27 +186,27 @@ def leer_participantes(ss) -> list:
         raise HTTPException(status_code=500, detail=f"Hoja '{SHEET_REGISTROS}' no encontrada")
     result = []
     for r in sheet.get_all_records():
-        tel_raw = buscar_columna(r, "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil", "celular", "tel")
+        tel_raw = buscar_columna(r, "Tel\u00e9fono m\u00f3vil", "Telefono movil", "telefono", "m\u00f3vil", "movil", "celular", "tel")
         result.append({
             "telefono" : normalizar_tel(tel_raw),
             "nombres"  : buscar_columna(r, "Nombres", "nombres", "nombre"),
             "apellidos": buscar_columna(r, "Apellidos", "apellidos", "apellido"),
             "email"    : buscar_columna(r, "Email", "email", "correo"),
-            "empresa"  : buscar_columna(r, "Empresa/Institución", "Empresa/Institucion", "empresa", "institucion"),
+            "empresa"  : buscar_columna(r, "Empresa/Instituci\u00f3n", "Empresa/Institucion", "empresa", "institucion"),
             "cargo"    : buscar_columna(r, "Cargo", "cargo"),
             "rol"      : buscar_columna(r,
-                "¿Cual es tu rol principal en la cadena de valor del banano?",
+                "\u00bfCual es tu rol principal en la cadena de valor del banano?",
                 "Cual es tu rol principal en la cadena de valor del banano?",
                 "rol principal", "rol"),
             "busca"    : buscar_columna(r,
-                "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ",
+                "En este evento, \u00bfqu\u00e9 est\u00e1s buscando principalmente? (m\u00e1ximo 3 opciones) ",
                 "En este evento, que estas buscando principalmente? (maximo 3 opciones)",
-                "En este evento, ¿qué estás buscando principalmente?",
+                "En este evento, \u00bfqu\u00e9 est\u00e1s buscando principalmente?",
                 "busca", "buscando"),
             "ofrece"   : buscar_columna(r,
-                "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)",
+                "\u00bfQu\u00e9 ofreces a otros participantes del evento? (m\u00e1ximo 3 opciones)",
                 "Que ofreces a otros participantes del evento? (maximo 3 opciones)",
-                "¿Qué ofreces a otros participantes del evento?",
+                "\u00bfQu\u00e9 ofreces a otros participantes del evento?",
                 "ofrece", "ofreces"),
             "tipo"     : buscar_columna(r, "Tipo entrada", "tipo entrada", "tipo"),
         })
@@ -262,7 +253,7 @@ class BatchResponse(BaseModel):
 # ─── Endpoints
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.3 activa", "version": "2.3.0"}
+    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.3.1 activa", "version": "2.3.1"}
 
 @app.get("/health")
 def health():
@@ -280,7 +271,6 @@ def debug():
     if not records:
         return {"columnas": [], "muestra_raw": {}, "muestra_mapeada": {}}
     participantes = leer_participantes(ss)
-    # Mostrar sets canonicalizados del primer participante
     m = participantes[0] if participantes else {}
     return {
         "total_registros" : len(records),
@@ -291,6 +281,51 @@ def debug():
             "busca" : list(parsear_multivalor(m.get("busca", ""))),
             "ofrece": list(parsear_multivalor(m.get("ofrece", ""))),
         }
+    }
+
+# ─── NUEVO: debug por móvil específico
+@app.get("/debug-user/{movil}")
+def debug_user(movil: str):
+    gc = get_sheets_client()
+    ss = gc.open_by_key(SPREADSHEET_ID)
+    participantes = leer_participantes(ss)
+    movil_norm = normalizar_tel(movil)
+    usuario = next((p for p in participantes if p["telefono"] == movil_norm), None)
+    if not usuario:
+        raise HTTPException(status_code=404, detail=f"No encontrado: {movil}")
+    busca_set  = parsear_multivalor(usuario.get("busca",  ""))
+    ofrece_set = parsear_multivalor(usuario.get("ofrece", ""))
+
+    # Simular los top-5 scores vs todos los demás
+    candidatos = [p for p in participantes if p["telefono"] != movil_norm]
+    scores_debug = []
+    for c in candidatos:
+        ofrece_c = parsear_multivalor(c.get("ofrece", ""))
+        busca_c  = parsear_multivalor(c.get("busca",  ""))
+        j1 = jaccard(ofrece_set, busca_c)
+        j2 = jaccard(ofrece_c, busca_set)
+        rol_ok = roles_complementarios(str(usuario.get("rol","")), str(c.get("rol","")))
+        score  = calcular_score(usuario, c)
+        scores_debug.append({
+            "nombre"    : nombre_completo(c["nombres"], c["apellidos"]),
+            "empresa"   : c["empresa"],
+            "score"     : score,
+            "j_ofrece_busca": round(j1, 3),
+            "j_busca_ofrece": round(j2, 3),
+            "rol_ok"    : rol_ok,
+            "ofrece_c"  : list(ofrece_c),
+            "busca_c"   : list(busca_c),
+        })
+    scores_debug.sort(key=lambda x: x["score"], reverse=True)
+
+    return {
+        "usuario"      : nombre_completo(usuario["nombres"], usuario["apellidos"]),
+        "rol"          : usuario.get("rol"),
+        "busca_raw"    : usuario.get("busca"),
+        "ofrece_raw"   : usuario.get("ofrece"),
+        "busca_canon"  : list(busca_set),
+        "ofrece_canon" : list(ofrece_set),
+        "top10_scores" : scores_debug[:10],
     }
 
 @app.post("/clear-history")
@@ -374,15 +409,15 @@ def batch_match(req: BatchRequest):
     top_n = req.top_n or DEFAULT_TOP_N
     participantes = leer_participantes(ss) if not req.registros else [
         {
-            "telefono" : normalizar_tel(buscar_columna(r, "Teléfono móvil", "Telefono movil", "telefono", "móvil", "movil")),
+            "telefono" : normalizar_tel(buscar_columna(r, "Tel\u00e9fono m\u00f3vil", "Telefono movil", "telefono", "m\u00f3vil", "movil")),
             "nombres"  : buscar_columna(r, "Nombres", "nombres"),
             "apellidos": buscar_columna(r, "Apellidos", "apellidos"),
             "email"    : buscar_columna(r, "Email", "email"),
-            "empresa"  : buscar_columna(r, "Empresa/Institución", "empresa"),
+            "empresa"  : buscar_columna(r, "Empresa/Instituci\u00f3n", "empresa"),
             "cargo"    : buscar_columna(r, "Cargo", "cargo"),
-            "rol"      : buscar_columna(r, "¿Cual es tu rol principal en la cadena de valor del banano?", "rol"),
-            "busca"    : buscar_columna(r, "En este evento, ¿qué estás buscando principalmente? (máximo 3 opciones) ", "busca"),
-            "ofrece"   : buscar_columna(r, "¿Qué ofreces a otros participantes del evento? (máximo 3 opciones)", "ofrece"),
+            "rol"      : buscar_columna(r, "\u00bfCual es tu rol principal en la cadena de valor del banano?", "rol"),
+            "busca"    : buscar_columna(r, "En este evento, \u00bfqu\u00e9 est\u00e1s buscando principalmente? (m\u00e1ximo 3 opciones) ", "busca"),
+            "ofrece"   : buscar_columna(r, "\u00bfQu\u00e9 ofreces a otros participantes del evento? (m\u00e1ximo 3 opciones)", "ofrece"),
             "tipo"     : buscar_columna(r, "Tipo entrada", "tipo"),
         } for r in req.registros
     ]
@@ -419,7 +454,7 @@ def batch_match(req: BatchRequest):
         pass
     return BatchResponse(status="ok", total_usuarios=len(participantes), total_matches=len(all_matches),
         matches=all_matches,
-        mensaje=f"Modelo corrido: {len(participantes)} participantes × top-{top_n}. Resultados en '{SHEET_RESULTADOS}'.")
+        mensaje=f"Modelo corrido: {len(participantes)} participantes \u00d7 top-{top_n}. Resultados en '{SHEET_RESULTADOS}'.")
 
 
 # ─── Historial helpers
@@ -459,7 +494,7 @@ def formatear_mensaje(nombre_usuario, matches):
     msg = f"🌿 *{nombre_usuario}*, encontré tus conexiones estratégicas para el Congreso Bananero 2026!\n\n"
     msg += "Analicé todos los perfiles del evento y estos son los más afines a ti:\n\n"
     for m in matches:
-        msg += f"*{m.posicion}. {m.nombre}* — {m.nivel} ({m.score}pts)\n"
-        msg += f"🏢 {m.empresa}\n📱 {m.movil}\n💡 {m.razon}\n\n"
-    msg += "¿Quieres saber más sobre alguno de estos perfiles o coordinar un encuentro?"
+        msg += f"*{m.posicion}. {m.nombre}* \u2014 {m.nivel} ({m.score}pts)\n"
+        msg += f"\ud83c\udfe2 {m.empresa}\n\ud83d\udcf1 {m.movil}\n\ud83d\udca1 {m.razon}\n\n"
+    msg += "\u00bfQuieres saber m\u00e1s sobre alguno de estos perfiles o coordinar un encuentro?"
     return msg
