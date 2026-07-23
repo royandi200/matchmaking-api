@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ANDICOM / ASBAMA 2026",
     description="Motor de matching para eventos B2B tecnológicos",
-    version="3.2.0"
+    version="3.3.0"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -22,50 +22,43 @@ SHEET_RESULTADOS = "MatchResultados"
 SHEET_HISTORIA   = "MatchHistoria"
 DEFAULT_TOP_N    = 10
 
-W_OFRECE_BUSCA = 0.45
-W_BUSCA_OFRECE = 0.45
+# fix v3.3.0: pesos ajustados para mayor gradiente
+W_OFRECE_BUSCA = 0.50
+W_BUSCA_OFRECE = 0.40
 W_ROL          = 0.10
 
-# Equivalencias: lo que alguien BUSCA ↔ lo que otro debe OFRECER para ser match
+# fix v3.3.0: MATCH_TABLE calibrada — tokens reducidos para evitar inflación de scores
+# (tabla anterior tenía hasta 11 tokens por clave → casi todo matcheaba como Excepcional)
 MATCH_TABLE = {
-    # busca                    : set de tokens de ofrece compatibles
-    "clientes_b2b"             : {"software_plataformas","consultoria_digital","ecommerce_marketing",
-                                   "hardware_equipos","infraestructura_cloud","automatizacion",
-                                   "marketing_digital","tech_impacto","formacion_investigacion"},
-    "proveedores_tech"         : {"software_plataformas","infraestructura_cloud","hardware_equipos",
-                                   "automatizacion","consultoria_digital","ecommerce_marketing"},
-    "alianzas"                 : {"software_plataformas","consultoria_digital","ecommerce_marketing",
-                                   "hardware_equipos","infraestructura_cloud","automatizacion",
-                                   "ecosistema_emprendimiento","tech_impacto","inversion_financiera",
-                                   "formacion_investigacion","marketing_digital"},
-    "apoyo_emprendimiento"     : {"ecosistema_emprendimiento","inversion_financiera",
-                                   "consultoria_digital","formacion_investigacion","software_plataformas"},
-    "talento"                  : {"formacion_investigacion","ecosistema_emprendimiento",
-                                   "consultoria_digital","software_plataformas"},
-    "financiero"               : {"inversion_financiera","ecosistema_emprendimiento"},
-    "aprendizaje"              : {"consultoria_digital","formacion_investigacion",
-                                   "software_plataformas","automatizacion","ecommerce_marketing",
-                                   "infraestructura_cloud","tech_impacto","ecosistema_emprendimiento"},
-    "impacto_social"           : {"tech_impacto","ecosistema_emprendimiento",
-                                   "formacion_investigacion","consultoria_digital"},
-    "networking"               : {"software_plataformas","consultoria_digital","ecommerce_marketing",
-                                   "hardware_equipos","infraestructura_cloud","automatizacion",
-                                   "ecosistema_emprendimiento","tech_impacto","inversion_financiera",
-                                   "formacion_investigacion","marketing_digital"},
-    "sector_publico"           : {"software_plataformas","consultoria_digital","formacion_investigacion",
-                                   "infraestructura_cloud","tech_impacto"},
-    # inverso: quien ofrece busca a quien puede necesitar
-    "software_plataformas"     : {"clientes_b2b","alianzas","proveedores_tech","networking"},
-    "infraestructura_cloud"    : {"clientes_b2b","alianzas","proveedores_tech","networking"},
-    "consultoria_digital"      : {"clientes_b2b","alianzas","aprendizaje","networking"},
-    "ecommerce_marketing"      : {"clientes_b2b","alianzas","networking"},
-    "hardware_equipos"         : {"clientes_b2b","alianzas","proveedores_tech","networking"},
-    "formacion_investigacion"  : {"aprendizaje","alianzas","talento","sector_publico","networking"},
-    "inversion_financiera"     : {"financiero","apoyo_emprendimiento","alianzas"},
-    "ecosistema_emprendimiento": {"apoyo_emprendimiento","alianzas","networking","impacto_social"},
-    "tech_impacto"             : {"impacto_social","alianzas","clientes_b2b","networking"},
-    "automatizacion"           : {"clientes_b2b","alianzas","aprendizaje","proveedores_tech","networking"},
-    "marketing_digital"        : {"clientes_b2b","alianzas","networking"},
+    # busca                    : set de tokens de ofrece compatibles (máx 6)
+    "clientes_b2b"             : {"software_plataformas", "consultoria_digital", "ecommerce_marketing",
+                                   "hardware_equipos", "infraestructura_cloud", "automatizacion"},
+    "proveedores_tech"         : {"software_plataformas", "infraestructura_cloud",
+                                   "hardware_equipos", "automatizacion"},
+    "alianzas"                 : {"software_plataformas", "consultoria_digital", "ecommerce_marketing",
+                                   "ecosistema_emprendimiento", "tech_impacto", "automatizacion"},
+    "apoyo_emprendimiento"     : {"ecosistema_emprendimiento", "inversion_financiera", "consultoria_digital"},
+    "talento"                  : {"formacion_investigacion", "ecosistema_emprendimiento", "consultoria_digital"},
+    "financiero"               : {"inversion_financiera", "ecosistema_emprendimiento"},
+    "aprendizaje"              : {"consultoria_digital", "formacion_investigacion",
+                                   "automatizacion", "software_plataformas"},
+    "impacto_social"           : {"tech_impacto", "ecosistema_emprendimiento", "formacion_investigacion"},
+    "networking"               : {"software_plataformas", "consultoria_digital",
+                                   "ecosistema_emprendimiento", "ecommerce_marketing", "automatizacion"},
+    "sector_publico"           : {"software_plataformas", "consultoria_digital",
+                                   "formacion_investigacion", "tech_impacto"},
+    # inverso: quien ofrece X, qué necesita encontrar (máx 3 targets)
+    "software_plataformas"     : {"clientes_b2b", "alianzas", "proveedores_tech"},
+    "infraestructura_cloud"    : {"clientes_b2b", "proveedores_tech", "alianzas"},
+    "consultoria_digital"      : {"clientes_b2b", "aprendizaje", "alianzas"},
+    "ecommerce_marketing"      : {"clientes_b2b", "alianzas", "networking"},
+    "hardware_equipos"         : {"clientes_b2b", "proveedores_tech"},
+    "formacion_investigacion"  : {"aprendizaje", "talento", "sector_publico"},
+    "inversion_financiera"     : {"financiero", "apoyo_emprendimiento", "alianzas"},
+    "ecosistema_emprendimiento": {"apoyo_emprendimiento", "alianzas", "impacto_social"},
+    "tech_impacto"             : {"impacto_social", "alianzas", "sector_publico"},
+    "automatizacion"           : {"clientes_b2b", "aprendizaje", "proveedores_tech", "alianzas"},
+    "marketing_digital"        : {"clientes_b2b", "alianzas", "networking"},
 }
 
 ROLES_COMPLEMENTARIOS = [
@@ -346,10 +339,15 @@ def leer_participantes(ss) -> list:
     except Exception:
         raise HTTPException(status_code=500, detail=f"Hoja '{SHEET_REGISTROS}' no encontrada")
     result = []
+    seen_tel = set()
     for r in sheet.get_all_records():
         tel_raw = buscar_columna(r, "telefono", "telefono movil", "movil", "celular", "tel")
+        tel_norm = normalizar_tel(tel_raw)
+        if tel_norm in seen_tel:
+            continue  # fix: ignorar registros duplicados por teléfono
+        seen_tel.add(tel_norm)
         result.append({
-            "telefono" : normalizar_tel(tel_raw),
+            "telefono" : tel_norm,
             "nombres"  : buscar_columna(r, "nombres", "nombre"),
             "apellidos": buscar_columna(r, "apellidos", "apellido"),
             "email"    : buscar_columna(r, "email", "correo"),
@@ -417,7 +415,7 @@ class BatchResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.2.0 activa", "version": "3.2.0"}
+    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.3.0 activa", "version": "3.3.0"}
 
 @app.get("/health")
 def health():
