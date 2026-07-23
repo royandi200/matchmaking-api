@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ANDICOM / ASBAMA 2026",
     description="Motor de matching para eventos B2B tecnológicos",
-    version="3.0.0"
+    version="3.1.0"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -210,7 +210,6 @@ def roles_complementarios(rol_a: str, rol_b: str) -> bool:
         pa, pb = list(pair)
         if (ra == pa and rb == pb) or (ra == pb and rb == pa):
             return True
-    # fallback: comparación normalizada
     ra_n = nk(ra)
     rb_n = nk(rb)
     for pair in ROLES_COMPLEMENTARIOS:
@@ -231,8 +230,6 @@ def calcular_score(a: dict, b: dict) -> float:
         W_BUSCA_OFRECE * jaccard(ofrece_b, busca_a) +
         W_ROL          * (1.0 if roles_complementarios(rol_a, rol_b) else 0.0)
     )
-    if str(a.get("empresa","")).strip().lower() == str(b.get("empresa","")).strip().lower() != "":
-        s *= 0.1
     return round(min(s * 100, 100), 1)
 
 def nivel_desde_score(score: float) -> str:
@@ -248,7 +245,6 @@ def razon_match(a: dict, b: dict) -> str:
     if comun:
         item = next(iter(comun))
         labels = {
-            # Tech B2B - ofrece
             "software_plataformas":        "software, aplicaciones o plataformas",
             "infraestructura_cloud":       "seguridad digital, nube o infraestructura",
             "consultoria_digital":         "acompañamiento en transformación digital",
@@ -259,7 +255,6 @@ def razon_match(a: dict, b: dict) -> str:
             "ecosistema_emprendimiento":   "espacios, comunidad o programas para crecer",
             "tech_impacto":                "tecnología con impacto social o ambiental",
             "automatizacion":              "herramientas para automatizar tareas y procesos",
-            # Tech B2B - busca
             "clientes_b2b":                "clientes para productos o servicios",
             "proveedores_tech":            "proveedores de tecnología o servicios",
             "alianzas":                    "aliados para nuevos proyectos",
@@ -270,7 +265,6 @@ def razon_match(a: dict, b: dict) -> str:
             "impacto_social":              "proyectos con impacto social o ambiental",
             "networking":                  "nuevas conexiones en el sector tecnológico",
             "sector_publico":              "contactos en entidades públicas",
-            # Roles canonizados
             "startup_tech":                "startups y emprendimientos tecnológicos",
             "proveedor_tech":              "proveedores de soluciones tecnológicas",
             "inversionista":               "inversión y financiación",
@@ -280,7 +274,6 @@ def razon_match(a: dict, b: dict) -> str:
             "marketing_digital":           "marketing digital y comercio electrónico",
             "ecommerce":                   "comercio electrónico",
             "academia":                    "investigación e innovación",
-            "sector_publico":              "sector público y entidades gubernamentales",
             "ecosistema":                  "ecosistema de emprendimiento",
             "empresa_usuaria":             "empresas que adoptan tecnología",
         }
@@ -377,7 +370,7 @@ class BatchResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.0.0 activa", "version": "3.0.0"}
+    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.1.0 activa", "version": "3.1.0"}
 
 @app.get("/health")
 def health():
@@ -495,15 +488,13 @@ def match(req: MatchRequest):
     usuario_row = next((p for p in participantes if p["telefono"] == movil_norm), None)
     if not usuario_row:
         raise HTTPException(status_code=404, detail=f"No se encontró usuario con móvil {req.movil}")
-    empresa_mejor: dict = {}
+    scored = []
     for c in participantes:
         if c["telefono"] == movil_norm:
             continue
         score = calcular_score(usuario_row, c)
-        emp = str(c.get("empresa", "")).strip().lower()
-        if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
-            empresa_mejor[emp] = (score, c)
-    scored = sorted(empresa_mejor.values(), key=lambda x: x[0], reverse=True)
+        scored.append((score, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
     matches = [
         MatchResult(
             posicion=i+1, nombre=nombre_completo(c["nombres"], c["apellidos"]),
@@ -519,11 +510,6 @@ def match(req: MatchRequest):
 
 @app.post("/batch-match", response_model=BatchResponse)
 def batch_match(req: BatchRequest):
-    """
-    Modo 1 (sin registros): lee Sheet completo y procesa todo.
-    Modo 2 (registros + todos): procesa el lote contra la base completa.
-    Permite partir 1000 participantes en lotes de 50 sin timeout.
-    """
     gc = get_sheets_client()
     ss = gc.open_by_key(SPREADSHEET_ID)
     top_n = req.top_n or DEFAULT_TOP_N
@@ -546,13 +532,12 @@ def batch_match(req: BatchRequest):
 
     all_matches = []
     for _, usuario in df_lote.iterrows():
-        empresa_mejor: dict = {}
+        scored = []
         for _, c in df_base[df_base["telefono"] != usuario["telefono"]].iterrows():
             score = calcular_score(usuario.to_dict(), c.to_dict())
-            emp = str(c.get("empresa", "")).strip().lower()
-            if emp not in empresa_mejor or score > empresa_mejor[emp][0]:
-                empresa_mejor[emp] = (score, c.to_dict())
-        for pos, (score, c) in enumerate(sorted(empresa_mejor.values(), key=lambda x: x[0], reverse=True)[:top_n]):
+            scored.append((score, c.to_dict()))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for pos, (score, c) in enumerate(scored[:top_n]):
             all_matches.append({
                 "posicion": pos+1, "tel_usuario": usuario["telefono"],
                 "nombre_usuario": nombre_completo(usuario["nombres"], usuario["apellidos"]),
