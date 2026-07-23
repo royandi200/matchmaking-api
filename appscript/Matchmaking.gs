@@ -1,7 +1,7 @@
 // ============================================================
 // MATCHMAKING WEBHOOK ASBAMA 2026 — Google Apps Script
 // MATCH: preview top 3 | CONTACTOS: siguientes 5 | QR: mensaje completo
-// v2.6 — limpiarDuplicadosParticipantes() integrada en correrModelo()
+// v2.7 — funciones de prueba mejoradas con teléfono configurable
 // ============================================================
 
 
@@ -20,11 +20,12 @@ const CONFIG = {
   TAMANO_LOTE      : 50,
 };
 
+// ── NÚMERO DE PRUEBA — cambia aquí antes de correr testMatch / testContactos / testQR
+const TEST_PHONE = "573157261315";
+
 
 
 // ── LIMPIAR DUPLICADOS ────────────────────────────────────────
-// Elimina filas con teléfono repetido en "Participantes".
-// Conserva la primera aparición. Se llama automáticamente al inicio de correrModelo().
 function limpiarDuplicadosParticipantes() {
   const ss      = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sheet   = ss.getSheetByName(CONFIG.SHEET_REGISTROS);
@@ -36,7 +37,6 @@ function limpiarDuplicadosParticipantes() {
   const data    = sheet.getDataRange().getValues();
   const headers = data[0].map(function(h) { return h.toString().toLowerCase().trim(); });
 
-  // Detectar columna de teléfono automáticamente
   const telCol = headers.findIndex(function(h) {
     return h.includes("tel") || h.includes("movil") ||
            h.includes("celular") || h.includes("móvil");
@@ -50,11 +50,10 @@ function limpiarDuplicadosParticipantes() {
   const seen     = new Set();
   const toDelete = [];
 
-  // Recorrer de abajo hacia arriba para no alterar índices al borrar
   for (let i = data.length - 1; i >= 1; i--) {
     const tel = data[i][telCol].toString().replace(/\D/g, "").trim();
     if (tel === "" || seen.has(tel)) {
-      toDelete.push(i + 1); // +1: sheet es 1-indexed
+      toDelete.push(i + 1);
     } else {
       seen.add(tel);
     }
@@ -78,7 +77,6 @@ function limpiarDuplicadosParticipantes() {
 function doPost(e) {
   let action = "UNKNOWN", phone = "", rawContent = "";
 
-
   try {
     rawContent = e.postData ? e.postData.contents : "";
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -96,22 +94,18 @@ function doPost(e) {
     Logger.log("LOG INICIAL ERROR: " + logErr.toString());
   }
 
-
   try {
     if (!rawContent || !rawContent.trim()) {
       return jsonResponse({ error: true, mensaje: "Body vacío" });
     }
 
-
     const jsonRaw    = JSON.parse(rawContent);
     const textoParse = jsonRaw.info || jsonRaw.Info || rawContent;
     const jsonMatch  = textoParse.toString().match(/\{[^{}]*"action"[^{}]*\}/);
 
-
     if (!jsonMatch) {
       return jsonResponse({ error: true, mensaje: "No se encontró JSON válido" });
     }
-
 
     const requestData = JSON.parse(jsonMatch[0]);
     action = requestData.action || "UNKNOWN";
@@ -123,24 +117,19 @@ function doPost(e) {
       ""
     );
 
-
     if (!phone) {
       return jsonResponse({ error: true, mensaje: "Falta el campo Usuari" });
     }
 
-
     const cache    = CacheService.getScriptCache();
     const cacheKey = normalizarTelefono(phone) + "_" + action + "_" + Math.floor(Date.now() / 5000);
-
 
     if (cache.get(cacheKey)) {
       return jsonResponse({ error: false, mensaje: "OK duplicado ignorado", duplicate: true });
     }
     cache.put(cacheKey, "1", 5);
 
-
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-
 
     let response;
     switch (action) {
@@ -157,10 +146,8 @@ function doPost(e) {
         response = { error: true, mensaje: "Acción no reconocida: " + action };
     }
 
-
     logRequest(action, phone, requestData, response, ss);
     return jsonResponse(response);
-
 
   } catch (err) {
     return jsonResponse({
@@ -179,18 +166,15 @@ function doGet(e) {
     const action = e.parameter.action;
     const phone  = e.parameter["Usuari@"] || e.parameter.Usuari || e.parameter.phone;
 
-
     if (!action || !phone) {
       return jsonResponse({
         status: "ok",
         mensaje: "ASBAMA Matchmaking API activa",
-        version: "v2.6"
+        version: "v2.7"
       });
     }
 
-
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-
 
     switch (action) {
       case "MATCH":
@@ -202,7 +186,6 @@ function doGet(e) {
       default:
         return jsonResponse({ error: true, mensaje: "Action inválida" });
     }
-
 
   } catch (err) {
     return jsonResponse({ error: true, mensaje: err.toString() });
@@ -216,34 +199,21 @@ function accionMatch(phone, ss) {
   Logger.log("MATCH para " + phone);
   if (!phone) return { error: true, mensaje: "Teléfono requerido" };
 
-
   const historial = obtenerHistorial(phone, ss);
   if (historial) {
     incrementarContador(phone, ss);
     const top3 = historial.slice(0, CONFIG.TOP_MATCH);
     Logger.log("Desde historial → top 3");
-    return {
-      error: false,
-      fuente: "historial",
-      matches: top3,
-      mensaje: formatearMensaje(top3, true)
-    };
+    return { error: false, fuente: "historial", matches: top3, mensaje: formatearMensaje(top3, true) };
   }
-
 
   const matchesSheet = buscarEnResultados(phone, ss, CONFIG.TOP_N);
   if (matchesSheet) {
     guardarHistorial(phone, matchesSheet, ss);
     const top3 = matchesSheet.slice(0, CONFIG.TOP_MATCH);
     Logger.log("Desde MatchResultados → top 3");
-    return {
-      error: false,
-      fuente: "resultados",
-      matches: top3,
-      mensaje: formatearMensaje(top3, true)
-    };
+    return { error: false, fuente: "resultados", matches: top3, mensaje: formatearMensaje(top3, true) };
   }
-
 
   return {
     error: false,
@@ -255,39 +225,26 @@ function accionMatch(phone, ss) {
 
 
 
-// ── ACCIÓN CONTACTOS — devuelve 5 diferentes a los 3 primeros ────────────────
+// ── ACCIÓN CONTACTOS — devuelve 5 diferentes a los 3 primeros ──────────────
 function accionContactos(phone, ss) {
   Logger.log("CONTACTOS para " + phone);
   if (!phone) return { error: true, mensaje: "Teléfono requerido" };
-
 
   const historial = obtenerHistorial(phone, ss);
   if (historial) {
     incrementarContador(phone, ss);
     const siguientes5 = historial.slice(CONFIG.OFFSET_CONTACTOS, CONFIG.OFFSET_CONTACTOS + CONFIG.TOP_CONTACTOS);
     Logger.log("Desde historial → siguientes 5");
-    return {
-      error: false,
-      fuente: "historial",
-      matches: siguientes5,
-      mensaje: formatearMensaje(siguientes5, false)
-    };
+    return { error: false, fuente: "historial", matches: siguientes5, mensaje: formatearMensaje(siguientes5, false) };
   }
-
 
   const matchesSheet = buscarEnResultados(phone, ss, CONFIG.TOP_N);
   if (matchesSheet) {
     guardarHistorial(phone, matchesSheet, ss);
     const siguientes5 = matchesSheet.slice(CONFIG.OFFSET_CONTACTOS, CONFIG.OFFSET_CONTACTOS + CONFIG.TOP_CONTACTOS);
     Logger.log("Desde MatchResultados → siguientes 5");
-    return {
-      error: false,
-      fuente: "resultados",
-      matches: siguientes5,
-      mensaje: formatearMensaje(siguientes5, false)
-    };
+    return { error: false, fuente: "resultados", matches: siguientes5, mensaje: formatearMensaje(siguientes5, false) };
   }
-
 
   return {
     error: false,
@@ -303,31 +260,17 @@ function accionContactos(phone, ss) {
 function accionQR(phone, ss) {
   Logger.log("QR para " + phone);
 
-
   if (!phone) {
-    return {
-      error: true,
-      action: "QR",
-      mensaje: "No pude procesar tu solicitud porque falta el número de teléfono."
-    };
+    return { error: true, action: "QR", mensaje: "No pude procesar tu solicitud porque falta el número de teléfono." };
   }
-
 
   const sheet = ss.getSheetByName(CONFIG.SHEET_REGISTROS);
   if (!sheet || sheet.getLastRow() < 2) {
-    return {
-      error: true,
-      action: "QR",
-      mensaje: "No fue posible consultar tu pase en este momento."
-    };
+    return { error: true, action: "QR", mensaje: "No fue posible consultar tu pase en este momento." };
   }
 
-
   const data    = sheet.getDataRange().getValues();
-  const headers = data[0].map(function(h) {
-    return h.toString().trim().toLowerCase();
-  });
-
+  const headers = data[0].map(function(h) { return h.toString().trim().toLowerCase(); });
 
   const col = {
     ticket_id    : headers.indexOf("ticket_id"),
@@ -340,23 +283,15 @@ function accionQR(phone, ss) {
     cargo        : headers.indexOf("cargo")
   };
 
-
   if (col.telefono === -1 || col.qr_code === -1) {
-    return {
-      error: true,
-      action: "QR",
-      mensaje: "No fue posible ubicar la información de tu QR en este momento."
-    };
+    return { error: true, action: "QR", mensaje: "No fue posible ubicar la información de tu QR en este momento." };
   }
 
-
   const phoneNorm = normalizarTelefono(phone);
-
 
   for (let i = 1; i < data.length; i++) {
     const telFila = normalizarTelefono(data[i][col.telefono]);
     if (!telFila) continue;
-
 
     if (telefonosCoinciden(phoneNorm, telFila)) {
       const nombres        = String(data[i][col.nombres] || "").trim();
@@ -368,27 +303,16 @@ function accionQR(phone, ss) {
       const cargo          = col.cargo > -1 ? String(data[i][col.cargo] || "").trim() : "";
       const qr             = String(data[i][col.qr_code] || "").trim();
 
-
       if (!qr) {
-        return {
-          error: true,
-          action: "QR",
-          mensaje: "Encontré tu registro, pero tu código QR aún no está disponible."
-        };
+        return { error: true, action: "QR", mensaje: "Encontré tu registro, pero tu código QR aún no está disponible." };
       }
-
 
       const esImagen = qr.indexOf("http://") === 0 || qr.indexOf("https://") === 0;
 
-
       let msg = "🎟️ *Pase de acceso al Congreso Bananero 2026*\n\n";
-
-
       if (nombreCompleto) msg += "*" + nombreCompleto + "*\n";
       if (ticketId) msg += "🎫 Ticket #: " + ticketId + "\n";
       if (tipoEntrada) msg += "🏷️ " + tipoEntrada + "\n";
-
-
       if (empresa && cargo) {
         msg += "🏢 " + empresa + " · " + cargo + "\n";
       } else if (empresa) {
@@ -396,41 +320,22 @@ function accionQR(phone, ss) {
       } else if (cargo) {
         msg += "🏢 " + cargo + "\n";
       }
-
-
       msg += "\nTu código QR de entrada:\n";
-
-
       if (esImagen) {
         msg += "![QR de acceso](" + qr + ")\n\n";
       } else {
-        msg += "━━━━━━━━━━━━━━━━━\n";
-        msg += "`" + qr + "`\n";
-        msg += "━━━━━━━━━━━━━━━━━\n\n";
+        msg += "━━━━━━━━━━━━━━━━━\n`" + qr + "`\n━━━━━━━━━━━━━━━━━\n\n";
       }
-
-
       msg += "📲 Preséntalo en la entrada desde tu celular o impreso.\n\n";
-      msg += "📍 *Ingreso al evento:*\n";
-      msg += "Centro de Convenciones Estelar Santamar — Santa Marta\n";
+      msg += "📍 *Ingreso al evento:*\nCentro de Convenciones Estelar Santamar — Santa Marta\n";
       msg += "📅 Jueves 21 y Viernes 22 de Mayo · 8:00 AM – 6:00 PM\n\n";
       msg += "💡 _Guarda este pase para tenerlo listo al llegar._";
 
-
-      return {
-        error: false,
-        action: "QR",
-        mensaje: msg
-      };
+      return { error: false, action: "QR", mensaje: msg };
     }
   }
 
-
-  return {
-    error: true,
-    action: "QR",
-    mensaje: "No encontré un registro con este número para generar tu QR."
-  };
+  return { error: true, action: "QR", mensaje: "No encontré un registro con este número para generar tu QR." };
 }
 
 
@@ -440,12 +345,8 @@ function buscarEnResultados(phone, ss, topN) {
   const sheet = ss.getSheetByName(CONFIG.SHEET_RESULTADOS);
   if (!sheet || sheet.getLastRow() < 2) return null;
 
-
   const data    = sheet.getDataRange().getValues();
-  const headers = data[0].map(function(h) {
-    return h.toString().trim().toLowerCase();
-  });
-
+  const headers = data[0].map(function(h) { return h.toString().trim().toLowerCase(); });
 
   const col = {
     tel_usu  : headers.indexOf("tel_usuario"),
@@ -460,11 +361,9 @@ function buscarEnResultados(phone, ss, topN) {
     posicion : headers.indexOf("posicion")
   };
 
-
   const phoneNorm = normalizarTelefono(phone);
   const matches   = [];
   let pos = 1;
-
 
   for (let i = 1; i < data.length && matches.length < topN; i++) {
     const telUsuario = normalizarTelefono(data[i][col.tel_usu]);
@@ -484,7 +383,6 @@ function buscarEnResultados(phone, ss, topN) {
     }
   }
 
-
   return matches.length > 0 ? matches : null;
 }
 
@@ -494,11 +392,9 @@ function buscarEnResultados(phone, ss, topN) {
 function formatearMensaje(matches, esPreview) {
   if (!matches || matches.length === 0) return "Sin matches disponibles.";
 
-
   let msg = esPreview
     ? "🌿 *Tus top 3 conexiones para el Congreso Bananero 2026:*\n\n"
     : "📋 *Tus siguientes 5 conexiones estratégicas:*\n\n";
-
 
   matches.forEach(function(m) {
     msg += "*" + m.posicion + ". " + m.nombre + "* — " + m.nivel + " (" + m.score + "pts)\n";
@@ -507,11 +403,9 @@ function formatearMensaje(matches, esPreview) {
     msg += "💡 " + m.razon + "\n\n";
   });
 
-
   if (esPreview) {
     msg += "👉 Escribe *ver todos mis contactos* para ver más conexiones.";
   }
-
 
   return msg;
 }
@@ -523,26 +417,17 @@ function obtenerHistorial(phone, ss) {
   const sheet = ss.getSheetByName(CONFIG.SHEET_HISTORIA);
   if (!sheet || sheet.getLastRow() < 2) return null;
 
-
   const data      = sheet.getDataRange().getValues();
   const phoneNorm = normalizarTelefono(phone);
-
 
   for (let i = 1; i < data.length; i++) {
     const telHist = normalizarTelefono(data[i][0]);
     if (telefonosCoinciden(phoneNorm, telHist)) {
-      try {
-        return JSON.parse(data[i][2]);
-      } catch (e) {
-        return null;
-      }
+      try { return JSON.parse(data[i][2]); } catch (e) { return null; }
     }
   }
-
-
   return null;
 }
-
 
 
 function guardarHistorial(phone, matches, ss) {
@@ -559,16 +444,11 @@ function guardarHistorial(phone, matches, ss) {
 }
 
 
-
 function incrementarContador(phone, ss) {
   const sheet = ss.getSheetByName(CONFIG.SHEET_HISTORIA);
   if (!sheet) return;
-
-
   const data      = sheet.getDataRange().getValues();
   const phoneNorm = normalizarTelefono(phone);
-
-
   for (let i = 1; i < data.length; i++) {
     const telHist = normalizarTelefono(data[i][0]);
     if (telefonosCoinciden(phoneNorm, telHist)) {
@@ -592,36 +472,22 @@ function logRequest(action, phone, requestData, response, ss) {
            .setFontColor("#ffffff")
            .setFontWeight("bold");
     }
-
-
     const requestTxt  = JSON.stringify(requestData);
     const responseTxt = JSON.stringify(response);
-
-
     sheet.appendRow([
-      new Date(),
-      action,
-      phone,
-      requestTxt.length > 1000 ? requestTxt.substring(0, 1000) + "…[truncado]" : requestTxt,
+      new Date(), action, phone,
+      requestTxt.length  > 1000 ? requestTxt.substring(0, 1000)   + "…[truncado]" : requestTxt,
       responseTxt.length > 4000 ? responseTxt.substring(0, 4000) + "…[truncado]" : responseTxt
     ]);
-  } catch (e) {
-    Logger.log("Log error: " + e.toString());
-  }
+  } catch (e) { Logger.log("Log error: " + e.toString()); }
 }
 
 
 
 // ── UTILIDADES ────────────────────────────────────────────────
-function normalizar(val) {
-  return String(val || "").replace(/-/g, "");
-}
+function normalizar(val) { return String(val || "").replace(/-/g, ""); }
 
-
-function normalizarTelefono(val) {
-  return String(val || "").replace(/\D/g, "").trim();
-}
-
+function normalizarTelefono(val) { return String(val || "").replace(/\D/g, "").trim(); }
 
 function telefonosCoinciden(a, b) {
   a = normalizarTelefono(a);
@@ -629,7 +495,6 @@ function telefonosCoinciden(a, b) {
   if (!a || !b) return false;
   return a === b || a.endsWith(b) || b.endsWith(a);
 }
-
 
 function jsonResponse(obj) {
   return ContentService
@@ -651,46 +516,34 @@ function correrModelo() {
 
   const ss    = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sheet = ss.getSheetByName(CONFIG.SHEET_REGISTROS);
-  if (!sheet) {
-    Logger.log("ERROR: Hoja no encontrada");
-    return;
-  }
-
+  if (!sheet) { Logger.log("ERROR: Hoja no encontrada"); return; }
 
   const data    = sheet.getDataRange().getValues();
   const headers = data[0];
   const todos   = [];
 
-
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
     if (!row.some(function(c) { return c !== ""; })) continue;
     const obj = {};
-    headers.forEach(function(h, j) {
-      obj[h] = row[j];
-    });
+    headers.forEach(function(h, j) { obj[h] = row[j]; });
     todos.push(obj);
   }
 
-
-  const total       = todos.length;
-  const lote        = CONFIG.TAMANO_LOTE;
-  const nlotes      = Math.ceil(total / lote);
-  const props       = PropertiesService.getScriptProperties();
-  const loteInicio  = Number(props.getProperty("LOTE_ACTUAL") || 1);
-  const esNuevo     = loteInicio === 1;
-
+  const total      = todos.length;
+  const lote       = CONFIG.TAMANO_LOTE;
+  const nlotes     = Math.ceil(total / lote);
+  const props      = PropertiesService.getScriptProperties();
+  const loteInicio = Number(props.getProperty("LOTE_ACTUAL") || 1);
+  const esNuevo    = loteInicio === 1;
 
   Logger.log("Total: " + total + " | Lotes: " + nlotes + " | Iniciando desde lote " + loteInicio);
-
 
   const LIMITE_MS = 5 * 60 * 1000;
   const inicio    = Date.now();
 
-
   for (let n = loteInicio; n <= nlotes; n++) {
     props.setProperty("LOTE_ACTUAL", String(n));
-
 
     if (Date.now() - inicio > LIMITE_MS) {
       Logger.log("⏱ Límite de tiempo — guardado en lote " + n);
@@ -698,13 +551,9 @@ function correrModelo() {
       return;
     }
 
-
     const i         = (n - 1) * lote;
     const registros = todos.slice(i, i + lote);
-
-
     Logger.log("Lote " + n + "/" + nlotes + " (registros " + (i + 1) + "-" + Math.min(i + lote, total) + ")...");
-
 
     try {
       const resp = UrlFetchApp.fetch(CONFIG.API_VERCEL_BATCH, {
@@ -713,12 +562,8 @@ function correrModelo() {
         payload: JSON.stringify({ registros: registros, todos: todos, topn: CONFIG.TOP_N }),
         muteHttpExceptions: true
       });
-
-
       const code = resp.getResponseCode();
       Logger.log("  HTTP " + code);
-
-
       if (code === 200) {
         const json = JSON.parse(resp.getContentText());
         if (json.matches && json.matches.length) {
@@ -732,20 +577,15 @@ function correrModelo() {
       Logger.log("  EXCEPCIÓN lote " + n + ": " + err.message);
     }
 
-
     if (n < nlotes) Utilities.sleep(300);
   }
-
 
   props.deleteProperty("LOTE_ACTUAL");
   Logger.log("✅ MODELO COMPLETO — " + total + " participantes, " + nlotes + " lotes.");
 }
 
 
-
-function correrModeloContinuar() {
-  correrModelo();
-}
+function correrModeloContinuar() { correrModelo(); }
 
 
 function reiniciarModelo() {
@@ -761,14 +601,7 @@ function appendResultados(matches, ss, limpiar) {
     "tel_match","nombre_match","email_match","empresa_match",
     "cargo_match","score","nivel","razon","posicion"
   ];
-
-
-  if (!sheet) {
-    sheet = ss.insertSheet(CONFIG.SHEET_RESULTADOS);
-    limpiar = true;
-  }
-
-
+  if (!sheet) { sheet = ss.insertSheet(CONFIG.SHEET_RESULTADOS); limpiar = true; }
   if (limpiar) {
     sheet.clearContents();
     sheet.getRange(1, 1, 1, hdrs.length)
@@ -778,8 +611,6 @@ function appendResultados(matches, ss, limpiar) {
          .setFontWeight("bold");
     sheet.setFrozenRows(1);
   }
-
-
   const rows = matches.map(function(m) {
     return [
       m.tel_usuario, m.nombre_usuario, m.email_usuario, m.empresa_usuario,
@@ -787,8 +618,6 @@ function appendResultados(matches, ss, limpiar) {
       m.cargo_match, m.score || 0, m.nivel, m.razon, m.posicion
     ];
   });
-
-
   if (rows.length > 0) {
     sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, hdrs.length).setValues(rows);
   }
@@ -796,75 +625,86 @@ function appendResultados(matches, ss, limpiar) {
 
 
 
-// ── ADMINISTRACIÓN ────────────────────────────────────────────
+// ── PRUEBAS ───────────────────────────────────────────────────
+// Cambia TEST_PHONE arriba (línea 18) para probar otro participante.
+
 function testMatch() {
-  const fakePost = {
-    postData: {
-      contents: JSON.stringify({
-        info: JSON.stringify({ action: "MATCH", "Usuari@": "573157261315" })
-      })
-    }
-  };
-  Logger.log(doPost(fakePost).getContent());
+  Logger.log("═══════════════════════════════════════");
+  Logger.log("TEST MATCH — " + TEST_PHONE);
+  Logger.log("═══════════════════════════════════════");
+  const ss  = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const res = accionMatch(TEST_PHONE, ss);
+  Logger.log("Fuente : " + res.fuente);
+  Logger.log("Matches: " + res.matches.length);
+  Logger.log("───────────────────────────────────────");
+  Logger.log("MENSAJE WHATSAPP:");
+  Logger.log(res.mensaje);
+  Logger.log("═══════════════════════════════════════");
 }
 
 
 function testContactos() {
-  const fakePost = {
-    postData: {
-      contents: JSON.stringify({
-        info: JSON.stringify({ action: "CONTACTOS", "Usuari@": "573157261315" })
-      })
-    }
-  };
-  Logger.log(doPost(fakePost).getContent());
+  Logger.log("═══════════════════════════════════════");
+  Logger.log("TEST CONTACTOS — " + TEST_PHONE);
+  Logger.log("═══════════════════════════════════════");
+  const ss  = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const res = accionContactos(TEST_PHONE, ss);
+  Logger.log("Fuente : " + res.fuente);
+  Logger.log("Matches: " + res.matches.length);
+  Logger.log("───────────────────────────────────────");
+  Logger.log("MENSAJE WHATSAPP:");
+  Logger.log(res.mensaje);
+  Logger.log("═══════════════════════════════════════");
 }
 
 
 function testQR() {
-  const fakePost = {
-    postData: {
-      contents: JSON.stringify({
-        info: JSON.stringify({ action: "QR", "Usuari@": "573157261315" })
-      })
-    }
-  };
-  Logger.log(doPost(fakePost).getContent());
+  Logger.log("═══════════════════════════════════════");
+  Logger.log("TEST QR — " + TEST_PHONE);
+  Logger.log("═══════════════════════════════════════");
+  const ss  = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const res = accionQR(TEST_PHONE, ss);
+  Logger.log("Error  : " + res.error);
+  Logger.log("───────────────────────────────────────");
+  Logger.log("MENSAJE WHATSAPP:");
+  Logger.log(res.mensaje);
+  Logger.log("═══════════════════════════════════════");
 }
 
 
+function testTodos() {
+  // Corre los 3 tests seguidos con el mismo TEST_PHONE
+  testMatch();
+  testContactos();
+  testQR();
+}
+
+
+
+// ── ADMINISTRACIÓN ────────────────────────────────────────────
 function resetearUsuario() {
-  const phone = "573157261315";
+  // Cambia TEST_PHONE arriba para resetear otro usuario
   const ss    = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sheet = ss.getSheetByName(CONFIG.SHEET_HISTORIA);
   if (!sheet) return;
-
-
   const data      = sheet.getDataRange().getValues();
-  const phoneNorm = normalizarTelefono(phone);
-
-
+  const phoneNorm = normalizarTelefono(TEST_PHONE);
   for (let i = 1; i < data.length; i++) {
     const telHist = normalizarTelefono(data[i][0]);
     if (telefonosCoinciden(phoneNorm, telHist)) {
       sheet.deleteRow(i + 1);
-      Logger.log("Historial borrado: " + phone);
+      Logger.log("Historial borrado: " + TEST_PHONE);
       return;
     }
   }
-
-
-  Logger.log("No se encontró historial para " + phone);
+  Logger.log("No se encontró historial para " + TEST_PHONE);
 }
 
 
 function resetearTodoElHistorial() {
   const ss    = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sheet = ss.getSheetByName(CONFIG.SHEET_HISTORIA);
-  if (!sheet || sheet.getLastRow() < 2) {
-    Logger.log("Sin historial que borrar");
-    return;
-  }
+  if (!sheet || sheet.getLastRow() < 2) { Logger.log("Sin historial que borrar"); return; }
   sheet.deleteRows(2, sheet.getLastRow() - 1);
   Logger.log("✅ Historial completo borrado.");
 }
@@ -873,10 +713,7 @@ function resetearTodoElHistorial() {
 function verHistorial() {
   const ss    = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sheet = ss.getSheetByName(CONFIG.SHEET_HISTORIA);
-  if (!sheet) {
-    Logger.log("Sin historial aún");
-    return;
-  }
+  if (!sheet) { Logger.log("Sin historial aún"); return; }
   Logger.log("Usuarios con matches guardados: " + (sheet.getLastRow() - 1));
 }
 
@@ -885,15 +722,9 @@ function testSheet() {
   try {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     Logger.log("✅ OK: " + ss.getName());
-  } catch (e) {
-    Logger.log("❌ ERROR: " + e.toString());
-  }
-
-
+  } catch (e) { Logger.log("❌ ERROR: " + e.toString()); }
   try {
     const ss2 = SpreadsheetApp.getActiveSpreadsheet();
     Logger.log("✅ ACTIVE OK: " + ss2.getName() + " | ID: " + ss2.getId());
-  } catch (e2) {
-    Logger.log("❌ ACTIVE ERROR: " + e2.toString());
-  }
+  } catch (e2) { Logger.log("❌ ACTIVE ERROR: " + e2.toString()); }
 }
