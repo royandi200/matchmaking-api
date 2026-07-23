@@ -11,7 +11,7 @@ from datetime import datetime
 app = FastAPI(
     title="Matchmaking API — ANDICOM / ASBAMA 2026",
     description="Motor de matching para eventos B2B tecnológicos",
-    version="3.1.0"
+    version="3.2.0"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -25,6 +25,48 @@ DEFAULT_TOP_N    = 10
 W_OFRECE_BUSCA = 0.45
 W_BUSCA_OFRECE = 0.45
 W_ROL          = 0.10
+
+# Equivalencias: lo que alguien BUSCA ↔ lo que otro debe OFRECER para ser match
+MATCH_TABLE = {
+    # busca                    : set de tokens de ofrece compatibles
+    "clientes_b2b"             : {"software_plataformas","consultoria_digital","ecommerce_marketing",
+                                   "hardware_equipos","infraestructura_cloud","automatizacion",
+                                   "marketing_digital","tech_impacto","formacion_investigacion"},
+    "proveedores_tech"         : {"software_plataformas","infraestructura_cloud","hardware_equipos",
+                                   "automatizacion","consultoria_digital","ecommerce_marketing"},
+    "alianzas"                 : {"software_plataformas","consultoria_digital","ecommerce_marketing",
+                                   "hardware_equipos","infraestructura_cloud","automatizacion",
+                                   "ecosistema_emprendimiento","tech_impacto","inversion_financiera",
+                                   "formacion_investigacion","marketing_digital"},
+    "apoyo_emprendimiento"     : {"ecosistema_emprendimiento","inversion_financiera",
+                                   "consultoria_digital","formacion_investigacion","software_plataformas"},
+    "talento"                  : {"formacion_investigacion","ecosistema_emprendimiento",
+                                   "consultoria_digital","software_plataformas"},
+    "financiero"               : {"inversion_financiera","ecosistema_emprendimiento"},
+    "aprendizaje"              : {"consultoria_digital","formacion_investigacion",
+                                   "software_plataformas","automatizacion","ecommerce_marketing",
+                                   "infraestructura_cloud","tech_impacto","ecosistema_emprendimiento"},
+    "impacto_social"           : {"tech_impacto","ecosistema_emprendimiento",
+                                   "formacion_investigacion","consultoria_digital"},
+    "networking"               : {"software_plataformas","consultoria_digital","ecommerce_marketing",
+                                   "hardware_equipos","infraestructura_cloud","automatizacion",
+                                   "ecosistema_emprendimiento","tech_impacto","inversion_financiera",
+                                   "formacion_investigacion","marketing_digital"},
+    "sector_publico"           : {"software_plataformas","consultoria_digital","formacion_investigacion",
+                                   "infraestructura_cloud","tech_impacto"},
+    # inverso: quien ofrece busca a quien puede necesitar
+    "software_plataformas"     : {"clientes_b2b","alianzas","proveedores_tech","networking"},
+    "infraestructura_cloud"    : {"clientes_b2b","alianzas","proveedores_tech","networking"},
+    "consultoria_digital"      : {"clientes_b2b","alianzas","aprendizaje","networking"},
+    "ecommerce_marketing"      : {"clientes_b2b","alianzas","networking"},
+    "hardware_equipos"         : {"clientes_b2b","alianzas","proveedores_tech","networking"},
+    "formacion_investigacion"  : {"aprendizaje","alianzas","talento","sector_publico","networking"},
+    "inversion_financiera"     : {"financiero","apoyo_emprendimiento","alianzas"},
+    "ecosistema_emprendimiento": {"apoyo_emprendimiento","alianzas","networking","impacto_social"},
+    "tech_impacto"             : {"impacto_social","alianzas","clientes_b2b","networking"},
+    "automatizacion"           : {"clientes_b2b","alianzas","aprendizaje","proveedores_tech","networking"},
+    "marketing_digital"        : {"clientes_b2b","alianzas","networking"},
+}
 
 ROLES_COMPLEMENTARIOS = [
     {"Invierto en empresas o proyectos.", "Tengo una startup o emprendimiento tecnológico."},
@@ -43,7 +85,6 @@ ROLES_COMPLEMENTARIOS = [
     {"Ofrezco servicios creativos, marketing digital o comercio electrónico.", "Tengo una empresa y uso tecnología en mi negocio."},
     {"Ofrezco servicios creativos, marketing digital o comercio electrónico.", "Vendo software o servicios de tecnología."},
     {"Vendo equipos, redes o infraestructura tecnológica.", "Vendo software o servicios de tecnología."},
-    {"Proveedor de soluciones tecnológicas.", "Tengo una empresa y uso tecnología en mi negocio."},
     {"Startup / emprendimiento tecnológico.", "Invierto en empresas o proyectos."},
     {"Startup / emprendimiento tecnológico.", "Hago parte de una comunidad, gremio, clúster o aceleradora."},
 ]
@@ -51,7 +92,6 @@ ROLES_COMPLEMENTARIOS = [
 NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
 
 CANON_RULES: list[tuple[list[str], str]] = [
-    # ── ROL CADENA ──────────────────────────────────────────────
     (["startup", "emprendimiento"],              "startup_tech"),
     (["proveedor", "soluciones", "tecnol"],      "proveedor_tech"),
     (["proveedor", "tecnol"],                    "proveedor_tech"),
@@ -73,8 +113,6 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["cluster", "aceleradora"],                 "ecosistema"),
     (["empresa", "uso", "tecnolog"],             "empresa_usuaria"),
     (["empresa", "tecnolog"],                    "empresa_usuaria"),
-
-    # ── BUSCA ───────────────────────────────────────────────────
     (["clientes", "productos"],                  "clientes_b2b"),
     (["clientes", "servicios"],                  "clientes_b2b"),
     (["proveedores", "tecnolog"],                "proveedores_tech"),
@@ -93,6 +131,7 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["aprender"],                               "aprendizaje"),
     (["impacto", "social"],                      "impacto_social"),
     (["impacto", "ambiental"],                   "impacto_social"),
+    (["contactos", "impacto"],                   "impacto_social"),
     (["conexiones", "sector"],                   "networking"),
     (["nuevas", "conexiones"],                   "networking"),
     (["networking"],                             "networking"),
@@ -101,8 +140,6 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["alianza"],                                "alianzas"),
     (["financiero"],                             "financiero"),
     (["financiacion"],                           "financiero"),
-
-    # ── OFRECE ──────────────────────────────────────────────────
     (["software", "aplicaciones"],               "software_plataformas"),
     (["software", "plataformas"],                "software_plataformas"),
     (["aplicaciones", "plataformas"],            "software_plataformas"),
@@ -112,6 +149,7 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["transformacion", "digital"],              "consultoria_digital"),
     (["acompanamiento", "transformacion"],       "consultoria_digital"),
     (["estrategia", "digital"],                  "consultoria_digital"),
+    (["acompanamiento", "estrategia"],           "consultoria_digital"),
     (["comercio", "electronico", "marketing"],   "ecommerce_marketing"),
     (["marketing", "digital", "contenidos"],     "ecommerce_marketing"),
     (["comercio", "electronico"],                "ecommerce_marketing"),
@@ -133,8 +171,6 @@ CANON_RULES: list[tuple[list[str], str]] = [
     (["automatizar", "procesos"],                "automatizacion"),
     (["herramientas", "automatizar"],            "automatizacion"),
     (["herramientas", "procesos"],               "automatizacion"),
-
-    # ── LEGACY / fallback genérico ───────────────────────────────
     (["tecnolog"],                               "software_plataformas"),
     (["certificacion"],                          "formacion_investigacion"),
     (["consultoria"],                            "consultoria_digital"),
@@ -165,22 +201,39 @@ def canonicalizar(val: str) -> str:
 
 
 def parsear_multivalor(val: str) -> set:
+    """Split respetando comas internas de cada opción.
+    Las opciones del form terminan en punto '.', separadas por ', '.
+    Estrategia: split por el patrón '.,' o '.' seguido de mayúscula.
+    """
     if not val or str(val).strip() in ("", "nan", "None"):
         return set()
-    raw = str(val)
-    if ";" in raw:
-        items = raw.split(";")
-    elif "," in raw:
-        items = raw.split(",")
-    else:
-        items = raw.split("\n")
-    items = {v.strip() for v in items if v.strip()}
+    raw = str(val).strip()
+    # Separar por punto seguido de coma+espacio, o punto+espacio antes de mayúscula
+    items = re.split(r'\.\s*,\s*|\.(\s+)(?=[A-Z\u00C0-\u00FF])', raw)
+    # re.split con grupos capturadores puede insertar None/espacios, limpiar
+    items = [i for i in items if i and i.strip() and not i.strip() == ""]
+    items = [i.strip().rstrip(".").strip() for i in items]
     result = set()
     for i in items:
+        if not i:
+            continue
         c = canonicalizar(i)
         if c and c != "otro" and len(c) > 2:
             result.add(c)
     return result
+
+
+def match_score_unilateral(busca_set: set, ofrece_set: set) -> float:
+    """Calcula qué tan bien ofrece_set satisface busca_set usando MATCH_TABLE.
+    Retorna valor entre 0.0 y 1.0."""
+    if not busca_set or not ofrece_set:
+        return 0.0
+    hits = 0
+    for b in busca_set:
+        compatibles = MATCH_TABLE.get(b, set())
+        if compatibles & ofrece_set:  # al menos un ofrece compatible
+            hits += 1
+    return hits / len(busca_set)
 
 
 def get_sheets_client():
@@ -195,13 +248,6 @@ def normalizar_tel(val) -> str:
 
 def nombre_completo(nombres: str, apellidos: str) -> str:
     return f"{nombres} {apellidos}".strip()
-
-def jaccard(set_a: set, set_b: set) -> float:
-    if not set_a or not set_b:
-        return 0.0
-    inter = len(set_a & set_b)
-    union = len(set_a | set_b)
-    return inter / union if union > 0 else 0.0
 
 def roles_complementarios(rol_a: str, rol_b: str) -> bool:
     ra = rol_a.strip()
@@ -225,11 +271,11 @@ def calcular_score(a: dict, b: dict) -> float:
     busca_b  = parsear_multivalor(b.get("busca",  ""))
     rol_a    = str(a.get("rol", "")).strip()
     rol_b    = str(b.get("rol", "")).strip()
-    s = (
-        W_OFRECE_BUSCA * jaccard(ofrece_a, busca_b) +
-        W_BUSCA_OFRECE * jaccard(ofrece_b, busca_a) +
-        W_ROL          * (1.0 if roles_complementarios(rol_a, rol_b) else 0.0)
-    )
+    # Qué tan bien B satisface lo que A busca
+    s_ab = match_score_unilateral(busca_a, ofrece_b)
+    # Qué tan bien A satisface lo que B busca
+    s_ba = match_score_unilateral(busca_b, ofrece_a)
+    s = W_OFRECE_BUSCA * s_ab + W_BUSCA_OFRECE * s_ba + W_ROL * (1.0 if roles_complementarios(rol_a, rol_b) else 0.0)
     return round(min(s * 100, 100), 1)
 
 def nivel_desde_score(score: float) -> str:
@@ -241,44 +287,45 @@ def nivel_desde_score(score: float) -> str:
 def razon_match(a: dict, b: dict) -> str:
     ofrece_b = parsear_multivalor(b.get("ofrece", ""))
     busca_a  = parsear_multivalor(a.get("busca",  ""))
-    comun    = ofrece_b & busca_a
-    if comun:
-        item = next(iter(comun))
-        labels = {
-            "software_plataformas":        "software, aplicaciones o plataformas",
-            "infraestructura_cloud":       "seguridad digital, nube o infraestructura",
-            "consultoria_digital":         "acompañamiento en transformación digital",
-            "ecommerce_marketing":         "comercio electrónico y marketing digital",
-            "hardware_equipos":            "equipos y dispositivos tecnológicos",
-            "formacion_investigacion":     "formación, cursos o investigación aplicada",
-            "inversion_financiera":        "inversión o apoyo financiero",
-            "ecosistema_emprendimiento":   "espacios, comunidad o programas para crecer",
-            "tech_impacto":                "tecnología con impacto social o ambiental",
-            "automatizacion":              "herramientas para automatizar tareas y procesos",
-            "clientes_b2b":                "clientes para productos o servicios",
-            "proveedores_tech":            "proveedores de tecnología o servicios",
-            "alianzas":                    "aliados para nuevos proyectos",
-            "apoyo_emprendimiento":        "apoyo para hacer crecer el emprendimiento",
-            "talento":                     "personas para sumar al equipo",
-            "financiero":                  "opciones de inversión o financiación",
-            "aprendizaje":                 "ideas y casos reales para aprender",
-            "impacto_social":              "proyectos con impacto social o ambiental",
-            "networking":                  "nuevas conexiones en el sector tecnológico",
-            "sector_publico":              "contactos en entidades públicas",
-            "startup_tech":                "startups y emprendimientos tecnológicos",
-            "proveedor_tech":              "proveedores de soluciones tecnológicas",
-            "inversionista":               "inversión y financiación",
-            "consultor_tech":              "consultoría en transformación digital",
-            "proveedor_software":          "software y servicios tecnológicos",
-            "proveedor_hardware":          "equipos y redes",
-            "marketing_digital":           "marketing digital y comercio electrónico",
-            "ecommerce":                   "comercio electrónico",
-            "academia":                    "investigación e innovación",
-            "ecosistema":                  "ecosistema de emprendimiento",
-            "empresa_usuaria":             "empresas que adoptan tecnología",
-        }
-        label = labels.get(item, item.replace("_", " "))
-        return f"{b.get('nombres', '')} ofrece '{label}', que es exactamente lo que buscas."
+    labels = {
+        "software_plataformas":        "software, aplicaciones o plataformas",
+        "infraestructura_cloud":       "seguridad digital, nube o infraestructura",
+        "consultoria_digital":         "acompañamiento en transformación digital",
+        "ecommerce_marketing":         "comercio electrónico y marketing digital",
+        "hardware_equipos":            "equipos y dispositivos tecnológicos",
+        "formacion_investigacion":     "formación, cursos o investigación aplicada",
+        "inversion_financiera":        "inversión o apoyo financiero",
+        "ecosistema_emprendimiento":   "espacios, comunidad o programas para crecer",
+        "tech_impacto":                "tecnología con impacto social o ambiental",
+        "automatizacion":              "herramientas para automatizar tareas y procesos",
+        "clientes_b2b":                "clientes para productos o servicios",
+        "proveedores_tech":            "proveedores de tecnología o servicios",
+        "alianzas":                    "aliados para nuevos proyectos",
+        "apoyo_emprendimiento":        "apoyo para hacer crecer el emprendimiento",
+        "talento":                     "personas para sumar al equipo",
+        "financiero":                  "opciones de inversión o financiación",
+        "aprendizaje":                 "ideas y casos reales para aprender",
+        "impacto_social":              "proyectos con impacto social o ambiental",
+        "networking":                  "nuevas conexiones en el sector tecnológico",
+        "sector_publico":              "contactos en entidades públicas",
+        "startup_tech":                "startups y emprendimientos tecnológicos",
+        "proveedor_tech":              "proveedores de soluciones tecnológicas",
+        "inversionista":               "inversión y financiación",
+        "consultor_tech":              "consultoría en transformación digital",
+        "proveedor_software":          "software y servicios tecnológicos",
+        "proveedor_hardware":          "equipos y redes",
+        "marketing_digital":           "marketing digital y comercio electrónico",
+        "ecosistema":                  "ecosistema de emprendimiento",
+        "empresa_usuaria":             "empresas que adoptan tecnología",
+    }
+    # Buscar qué de lo que ofrece B satisface lo que busca A
+    for b_item in busca_a:
+        compatibles = MATCH_TABLE.get(b_item, set())
+        matched = compatibles & ofrece_b
+        if matched:
+            ofr = next(iter(matched))
+            label = labels.get(ofr, ofr.replace("_", " "))
+            return f"{b.get('nombres', '')} ofrece '{label}', que es exactamente lo que buscas."
     if roles_complementarios(str(a.get("rol","")), str(b.get("rol",""))):
         return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en el ecosistema tech."
     return "Perfil estratégico con potencial de colaboración en el ecosistema tecnológico."
@@ -370,7 +417,7 @@ class BatchResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.1.0 activa", "version": "3.1.0"}
+    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.2.0 activa", "version": "3.2.0"}
 
 @app.get("/health")
 def health():
@@ -416,26 +463,21 @@ def debug_user(movil: str):
     for c in candidatos:
         ofrece_c = parsear_multivalor(c.get("ofrece", ""))
         busca_c  = parsear_multivalor(c.get("busca",  ""))
-        score  = calcular_score(usuario, c)
+        sc = calcular_score(usuario, c)
         scores_debug.append({
-            "nombre"         : nombre_completo(c["nombres"], c["apellidos"]),
-            "empresa"        : c["empresa"],
-            "rol"            : c.get("rol", ""),
-            "score"          : score,
-            "j_ofrece_busca" : round(jaccard(ofrece_set, busca_c), 3),
-            "j_busca_ofrece" : round(jaccard(ofrece_c, busca_set), 3),
-            "rol_ok"         : roles_complementarios(str(usuario.get("rol","")), str(c.get("rol",""))),
-            "ofrece_c"       : list(ofrece_c),
-            "busca_c"        : list(busca_c),
-            "busca_raw"      : c.get("busca", ""),
-            "ofrece_raw"     : c.get("ofrece", ""),
+            "nombre"      : nombre_completo(c["nombres"], c["apellidos"]),
+            "rol"         : c.get("rol", ""),
+            "score"       : sc,
+            "s_ab"        : round(match_score_unilateral(busca_set, ofrece_c), 3),
+            "s_ba"        : round(match_score_unilateral(busca_c, ofrece_set), 3),
+            "rol_ok"      : roles_complementarios(str(usuario.get("rol","")), str(c.get("rol",""))),
+            "ofrece_c"    : list(ofrece_c),
+            "busca_c"     : list(busca_c),
         })
     scores_debug.sort(key=lambda x: x["score"], reverse=True)
     return {
         "usuario"      : nombre_completo(usuario["nombres"], usuario["apellidos"]),
         "rol"          : usuario.get("rol"),
-        "busca_raw"    : usuario.get("busca"),
-        "ofrece_raw"   : usuario.get("ofrece"),
         "busca_canon"  : list(busca_set),
         "ofrece_canon" : list(ofrece_set),
         "top10_scores" : scores_debug[:10],
@@ -492,8 +534,7 @@ def match(req: MatchRequest):
     for c in participantes:
         if c["telefono"] == movil_norm:
             continue
-        score = calcular_score(usuario_row, c)
-        scored.append((score, c))
+        scored.append((calcular_score(usuario_row, c), c))
     scored.sort(key=lambda x: x[0], reverse=True)
     matches = [
         MatchResult(
@@ -534,17 +575,16 @@ def batch_match(req: BatchRequest):
     for _, usuario in df_lote.iterrows():
         scored = []
         for _, c in df_base[df_base["telefono"] != usuario["telefono"]].iterrows():
-            score = calcular_score(usuario.to_dict(), c.to_dict())
-            scored.append((score, c.to_dict()))
+            scored.append((calcular_score(usuario.to_dict(), c.to_dict()), c.to_dict()))
         scored.sort(key=lambda x: x[0], reverse=True)
-        for pos, (score, c) in enumerate(scored[:top_n]):
+        for pos, (sc, c) in enumerate(scored[:top_n]):
             all_matches.append({
                 "posicion": pos+1, "tel_usuario": usuario["telefono"],
                 "nombre_usuario": nombre_completo(usuario["nombres"], usuario["apellidos"]),
                 "email_usuario": usuario["email"], "empresa_usuario": usuario["empresa"],
                 "tel_match": c["telefono"], "nombre_match": nombre_completo(c["nombres"], c["apellidos"]),
                 "email_match": c["email"], "empresa_match": c["empresa"], "cargo_match": c["cargo"],
-                "score": score, "nivel": nivel_desde_score(score), "razon": razon_match(usuario.to_dict(), c),
+                "score": sc, "nivel": nivel_desde_score(sc), "razon": razon_match(usuario.to_dict(), c),
             })
 
     if not req.todos:
