@@ -9,9 +9,9 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 app = FastAPI(
-    title="Matchmaking API — ASBAMA 2026",
-    description="Motor de matching para el 4° Congreso Bananero Colombiano",
-    version="2.5.3"
+    title="Matchmaking API — ANDICOM / ASBAMA 2026",
+    description="Motor de matching para eventos B2B tecnológicos",
+    version="3.0.0"
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -27,61 +27,121 @@ W_BUSCA_OFRECE = 0.45
 W_ROL          = 0.10
 
 ROLES_COMPLEMENTARIOS = [
-    {"Productor / Finca", "Proveedor de insumos agrícolas"},
-    {"Productor / Finca", "Proveedor de maquinaria / tecnología"},
-    {"Productor / Finca", "Empresa de logística / transporte / puerto"},
-    {"Productor / Finca", "Empresa de certificación / auditoría"},
-    {"Productor / Finca", "Consultoría / servicios técnicos"},
-    {"Productor / Finca", "Academia / centro de investigación"},
-    {"Proveedor de insumos agrícolas", "Consultoría / servicios técnicos"},
-    {"Academia / centro de investigación", "Proveedor de insumos agrícolas"},
+    {"Invierto en empresas o proyectos.", "Tengo una startup o emprendimiento tecnológico."},
+    {"Invierto en empresas o proyectos.", "Tengo una empresa y uso tecnología en mi negocio."},
+    {"Vendo software o servicios de tecnología.", "Tengo una empresa y uso tecnología en mi negocio."},
+    {"Vendo equipos, redes o infraestructura tecnológica.", "Tengo una empresa y uso tecnología en mi negocio."},
+    {"Ayudo a empresas a mejorar sus procesos con tecnología.", "Tengo una empresa y uso tecnología en mi negocio."},
+    {"Ayudo a empresas a mejorar sus procesos con tecnología.", "Tengo una startup o emprendimiento tecnológico."},
+    {"Trabajo en educación, investigación o innovación.", "Tengo una startup o emprendimiento tecnológico."},
+    {"Trabajo en educación, investigación o innovación.", "Vendo software o servicios de tecnología."},
+    {"Hago parte de una comunidad, gremio, clúster o aceleradora.", "Tengo una startup o emprendimiento tecnológico."},
+    {"Hago parte de una comunidad, gremio, clúster o aceleradora.", "Invierto en empresas o proyectos."},
+    {"Trabajo en una entidad pública.", "Tengo una startup o emprendimiento tecnológico."},
+    {"Trabajo en una entidad pública.", "Vendo software o servicios de tecnología."},
+    {"Trabajo en una entidad pública.", "Ayudo a empresas a mejorar sus procesos con tecnología."},
+    {"Ofrezco servicios creativos, marketing digital o comercio electrónico.", "Tengo una empresa y uso tecnología en mi negocio."},
+    {"Ofrezco servicios creativos, marketing digital o comercio electrónico.", "Vendo software o servicios de tecnología."},
+    {"Vendo equipos, redes o infraestructura tecnológica.", "Vendo software o servicios de tecnología."},
+    {"Proveedor de soluciones tecnológicas.", "Tengo una empresa y uso tecnología en mi negocio."},
+    {"Startup / emprendimiento tecnológico.", "Invierto en empresas o proyectos."},
+    {"Startup / emprendimiento tecnológico.", "Hago parte de una comunidad, gremio, clúster o aceleradora."},
 ]
 
 NIVELES_SCORE = [(90, "Excepcional"), (75, "Altamente Compatible"), (60, "Muy Compatible"), (0, "Compatible")]
 
 CANON_RULES: list[tuple[list[str], str]] = [
-    (["fruta"],                              "fruta_banana"),
-    (["banano"],                             "fruta_banana"),
-    (["platano"],                            "fruta_banana"),
-    (["insumos", "agri"],                   "insumos_agricolas"),
-    (["fertilizante"],                       "insumos_agricolas"),
-    (["agroquim"],                           "insumos_agricolas"),
-    (["bioinsumo"],                          "insumos_agricolas"),
-    (["proveedores", "insumo"],              "insumos_agricolas"),
-    (["proveedores", "servicio"],            "insumos_agricolas"),
-    (["maquinaria"],                         "maquinaria_equipos"),
-    (["equipos"],                            "maquinaria_equipos"),
-    (["riego"],                              "maquinaria_equipos"),
-    (["empaque"],                            "maquinaria_equipos"),
-    (["postcosecha"],                        "maquinaria_equipos"),
-    (["comprador"],                          "compradores"),
-    (["compradores"],                        "compradores"),
-    (["alianza"],                            "alianzas"),
-    (["aprender"],                           "aprendizaje"),
-    (["actualizarme"],                       "aprendizaje"),
-    (["aprendizaje"],                        "aprendizaje"),
-    (["networking"],                         "networking"),
-    (["certificacion"],                      "certificaciones"),
-    (["auditoria"],                          "certificaciones"),
-    (["normativa"],                          "certificaciones"),
-    (["sostenibilidad"],                     "sostenibilidad"),
-    (["esg"],                               "sostenibilidad"),
-    (["exportacion"],                        "exportacion"),
-    (["comercializacion"],                   "exportacion"),
-    (["consultoria"],                        "consultoria"),
-    (["tecnica", "gestion"],                 "consultoria"),
-    (["tecnolog"],                           "tecnologia"),
-    (["innovacion"],                         "tecnologia"),
-    (["solucion"],                           "tecnologia"),
-    (["financiero"],                         "financiero"),
-    (["seguro"],                             "financiero"),
-    (["credito"],                            "financiero"),
-    (["formacion"],                          "formacion"),
-    (["investigacion"],                      "formacion"),
-    (["transferencia", "conocimiento"],      "formacion"),
-    (["logistica"],                          "logistica"),
-    (["transporte"],                         "logistica"),
-    (["puerto"],                             "logistica"),
+    # ── ROL CADENA ──────────────────────────────────────────────
+    (["startup", "emprendimiento"],              "startup_tech"),
+    (["proveedor", "soluciones", "tecnol"],      "proveedor_tech"),
+    (["proveedor", "tecnol"],                    "proveedor_tech"),
+    (["invierto", "empresas"],                   "inversionista"),
+    (["invierto", "proyectos"],                  "inversionista"),
+    (["ayudo", "empresas", "procesos"],          "consultor_tech"),
+    (["mejora", "procesos", "tecnolog"],         "consultor_tech"),
+    (["vendo", "software"],                      "proveedor_software"),
+    (["servicios", "tecnolog"],                  "proveedor_software"),
+    (["vendo", "equipos"],                       "proveedor_hardware"),
+    (["redes", "infraestructura"],               "proveedor_hardware"),
+    (["servicios", "creativos"],                 "marketing_digital"),
+    (["marketing", "digital"],                   "marketing_digital"),
+    (["comercio", "electronico"],                "ecommerce"),
+    (["educacion", "investigacion"],             "academia"),
+    (["innovacion"],                             "academia"),
+    (["entidad", "publica"],                     "sector_publico"),
+    (["comunidad", "gremio"],                    "ecosistema"),
+    (["cluster", "aceleradora"],                 "ecosistema"),
+    (["empresa", "uso", "tecnolog"],             "empresa_usuaria"),
+    (["empresa", "tecnolog"],                    "empresa_usuaria"),
+
+    # ── BUSCA ───────────────────────────────────────────────────
+    (["clientes", "productos"],                  "clientes_b2b"),
+    (["clientes", "servicios"],                  "clientes_b2b"),
+    (["proveedores", "tecnolog"],                "proveedores_tech"),
+    (["proveedores", "servicio"],                "proveedores_tech"),
+    (["aliados", "proyectos"],                   "alianzas"),
+    (["aliados", "nuevos"],                      "alianzas"),
+    (["apoyo", "emprendimiento"],                "apoyo_emprendimiento"),
+    (["hacer", "crecer", "emprendimiento"],      "apoyo_emprendimiento"),
+    (["personas", "equipo"],                     "talento"),
+    (["sumar", "equipo"],                        "talento"),
+    (["inversion", "financiacion"],              "financiero"),
+    (["opciones", "inversion"],                  "financiero"),
+    (["inversion", "apoyo"],                     "financiero"),
+    (["ideas", "casos", "aprender"],             "aprendizaje"),
+    (["ideas", "aprender"],                      "aprendizaje"),
+    (["aprender"],                               "aprendizaje"),
+    (["impacto", "social"],                      "impacto_social"),
+    (["impacto", "ambiental"],                   "impacto_social"),
+    (["conexiones", "sector"],                   "networking"),
+    (["nuevas", "conexiones"],                   "networking"),
+    (["networking"],                             "networking"),
+    (["entidades", "publicas"],                  "sector_publico"),
+    (["contactos", "publico"],                   "sector_publico"),
+    (["alianza"],                                "alianzas"),
+    (["financiero"],                             "financiero"),
+    (["financiacion"],                           "financiero"),
+
+    # ── OFRECE ──────────────────────────────────────────────────
+    (["software", "aplicaciones"],               "software_plataformas"),
+    (["software", "plataformas"],                "software_plataformas"),
+    (["aplicaciones", "plataformas"],            "software_plataformas"),
+    (["seguridad", "digital"],                   "infraestructura_cloud"),
+    (["nube", "infraestructura"],                "infraestructura_cloud"),
+    (["seguridad", "nube"],                      "infraestructura_cloud"),
+    (["transformacion", "digital"],              "consultoria_digital"),
+    (["acompanamiento", "transformacion"],       "consultoria_digital"),
+    (["estrategia", "digital"],                  "consultoria_digital"),
+    (["comercio", "electronico", "marketing"],   "ecommerce_marketing"),
+    (["marketing", "digital", "contenidos"],     "ecommerce_marketing"),
+    (["comercio", "electronico"],                "ecommerce_marketing"),
+    (["equipos", "dispositivos"],                "hardware_equipos"),
+    (["hardware", "dispositivos"],               "hardware_equipos"),
+    (["pcs", "servidores"],                      "hardware_equipos"),
+    (["formacion", "cursos"],                    "formacion_investigacion"),
+    (["investigacion", "aplicada"],              "formacion_investigacion"),
+    (["cursos", "investigacion"],                "formacion_investigacion"),
+    (["inversion", "apoyo", "financiero"],       "inversion_financiera"),
+    (["inversion", "financiero"],                "inversion_financiera"),
+    (["apoyo", "financiero"],                    "inversion_financiera"),
+    (["espacios", "comunidad"],                  "ecosistema_emprendimiento"),
+    (["programas", "crecer"],                    "ecosistema_emprendimiento"),
+    (["comunidad", "programas"],                 "ecosistema_emprendimiento"),
+    (["impacto", "social", "ambiental"],         "tech_impacto"),
+    (["tecnologia", "impacto"],                  "tech_impacto"),
+    (["automatizar", "tareas"],                  "automatizacion"),
+    (["automatizar", "procesos"],                "automatizacion"),
+    (["herramientas", "automatizar"],            "automatizacion"),
+    (["herramientas", "procesos"],               "automatizacion"),
+
+    # ── LEGACY / fallback genérico ───────────────────────────────
+    (["tecnolog"],                               "software_plataformas"),
+    (["certificacion"],                          "formacion_investigacion"),
+    (["consultoria"],                            "consultoria_digital"),
+    (["logistica"],                              "proveedores_tech"),
+    (["financiero"],                             "inversion_financiera"),
+    (["seguro"],                                 "inversion_financiera"),
+    (["credito"],                                "inversion_financiera"),
 ]
 
 
@@ -144,11 +204,18 @@ def jaccard(set_a: set, set_b: set) -> float:
     return inter / union if union > 0 else 0.0
 
 def roles_complementarios(rol_a: str, rol_b: str) -> bool:
-    ra = nk(rol_a.strip())
-    rb = nk(rol_b.strip())
+    ra = rol_a.strip()
+    rb = rol_b.strip()
+    for pair in ROLES_COMPLEMENTARIOS:
+        pa, pb = list(pair)
+        if (ra == pa and rb == pb) or (ra == pb and rb == pa):
+            return True
+    # fallback: comparación normalizada
+    ra_n = nk(ra)
+    rb_n = nk(rb)
     for pair in ROLES_COMPLEMENTARIOS:
         pa, pb = [nk(x) for x in pair]
-        if (ra == pa and rb == pb) or (ra == pb and rb == pa):
+        if (ra_n == pa and rb_n == pb) or (ra_n == pb and rb_n == pa):
             return True
     return False
 
@@ -181,27 +248,47 @@ def razon_match(a: dict, b: dict) -> str:
     if comun:
         item = next(iter(comun))
         labels = {
-            "fruta_banana":      "fruta fresca (banano / plátano)",
-            "insumos_agricolas": "insumos agrícolas",
-            "maquinaria_equipos":"maquinaria y equipos",
-            "compradores":       "compradores de producto",
-            "alianzas":          "alianzas comerciales",
-            "aprendizaje":       "formación y actualización",
-            "networking":        "networking",
-            "certificaciones":   "certificaciones y auditoría",
-            "sostenibilidad":    "sostenibilidad / ESG",
-            "exportacion":       "exportación y comercialización",
-            "consultoria":       "consultoría técnica",
-            "tecnologia":        "soluciones tecnológicas",
-            "financiero":        "productos financieros",
-            "formacion":         "investigación y transferencia",
-            "logistica":         "logística y transporte",
+            # Tech B2B - ofrece
+            "software_plataformas":        "software, aplicaciones o plataformas",
+            "infraestructura_cloud":       "seguridad digital, nube o infraestructura",
+            "consultoria_digital":         "acompañamiento en transformación digital",
+            "ecommerce_marketing":         "comercio electrónico y marketing digital",
+            "hardware_equipos":            "equipos y dispositivos tecnológicos",
+            "formacion_investigacion":     "formación, cursos o investigación aplicada",
+            "inversion_financiera":        "inversión o apoyo financiero",
+            "ecosistema_emprendimiento":   "espacios, comunidad o programas para crecer",
+            "tech_impacto":                "tecnología con impacto social o ambiental",
+            "automatizacion":              "herramientas para automatizar tareas y procesos",
+            # Tech B2B - busca
+            "clientes_b2b":                "clientes para productos o servicios",
+            "proveedores_tech":            "proveedores de tecnología o servicios",
+            "alianzas":                    "aliados para nuevos proyectos",
+            "apoyo_emprendimiento":        "apoyo para hacer crecer el emprendimiento",
+            "talento":                     "personas para sumar al equipo",
+            "financiero":                  "opciones de inversión o financiación",
+            "aprendizaje":                 "ideas y casos reales para aprender",
+            "impacto_social":              "proyectos con impacto social o ambiental",
+            "networking":                  "nuevas conexiones en el sector tecnológico",
+            "sector_publico":              "contactos en entidades públicas",
+            # Roles canonizados
+            "startup_tech":                "startups y emprendimientos tecnológicos",
+            "proveedor_tech":              "proveedores de soluciones tecnológicas",
+            "inversionista":               "inversión y financiación",
+            "consultor_tech":              "consultoría en transformación digital",
+            "proveedor_software":          "software y servicios tecnológicos",
+            "proveedor_hardware":          "equipos y redes",
+            "marketing_digital":           "marketing digital y comercio electrónico",
+            "ecommerce":                   "comercio electrónico",
+            "academia":                    "investigación e innovación",
+            "sector_publico":              "sector público y entidades gubernamentales",
+            "ecosistema":                  "ecosistema de emprendimiento",
+            "empresa_usuaria":             "empresas que adoptan tecnología",
         }
-        label = labels.get(item, item)
+        label = labels.get(item, item.replace("_", " "))
         return f"{b.get('nombres', '')} ofrece '{label}', que es exactamente lo que buscas."
     if roles_complementarios(str(a.get("rol","")), str(b.get("rol",""))):
-        return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en la cadena bananera."
-    return "Perfil estratégico con potencial de colaboración en el sector bananero."
+        return f"Roles complementarios: {a.get('rol','')} ↔ {b.get('rol','')}, alta sinergia en el ecosistema tech."
+    return "Perfil estratégico con potencial de colaboración en el ecosistema tecnológico."
 
 
 def buscar_columna(row: dict, *candidatos) -> str:
@@ -228,9 +315,9 @@ def leer_participantes(ss) -> list:
             "email"    : buscar_columna(r, "email", "correo"),
             "empresa"  : buscar_columna(r, "empresa", "empresa institucion", "institucion"),
             "cargo"    : buscar_columna(r, "cargo"),
-            "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol principal", "rol"),
-            "busca"    : buscar_columna(r, "busca", "en este evento que estas buscando principalmente maximo 3 opciones", "buscando"),
-            "ofrece"   : buscar_columna(r, "ofrece", "que ofreces a otros participantes del evento maximo 3 opciones", "ofreces"),
+            "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol principal", "rol", "a que te dedicas", "dedicas"),
+            "busca"    : buscar_columna(r, "busca", "que quieres encontrar", "en este evento que estas buscando principalmente maximo 3 opciones", "buscando"),
+            "ofrece"   : buscar_columna(r, "ofrece", "que puedes ofrecer", "que ofreces a otros participantes del evento maximo 3 opciones", "ofreces"),
             "tipo"     : buscar_columna(r, "tipo entrada", "tipoentrada", "tipo"),
         })
     return result
@@ -244,9 +331,9 @@ def mapear_registro(r: dict) -> dict:
         "email"    : buscar_columna(r, "email", "correo"),
         "empresa"  : buscar_columna(r, "empresa", "empresa institucion"),
         "cargo"    : buscar_columna(r, "cargo"),
-        "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol"),
-        "busca"    : buscar_columna(r, "busca", "buscando"),
-        "ofrece"   : buscar_columna(r, "ofrece", "ofreces"),
+        "rol"      : buscar_columna(r, "rol cadena", "rolcadena", "rol", "a que te dedicas", "dedicas"),
+        "busca"    : buscar_columna(r, "busca", "que quieres encontrar", "buscando"),
+        "ofrece"   : buscar_columna(r, "ofrece", "que puedes ofrecer", "ofreces"),
         "tipo"     : buscar_columna(r, "tipo entrada", "tipoentrada", "tipo"),
     }
 
@@ -290,7 +377,7 @@ class BatchResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mensaje": "ASBAMA Matchmaking API v2.5.3 activa", "version": "2.5.3"}
+    return {"status": "ok", "mensaje": "ANDICOM/ASBAMA Matchmaking API v3.0.0 activa", "version": "3.0.0"}
 
 @app.get("/health")
 def health():
@@ -530,10 +617,10 @@ def incrementar_contador(movil_norm, ss):
         pass
 
 def formatear_mensaje(nombre_usuario, matches):
-    msg = f"🌿 *{nombre_usuario}*, encontré tus conexiones estratégicas para el Congreso Bananero 2026!\n\n"
-    msg += "Analicé todos los perfiles del evento y estos son los más afines a ti:\n\n"
+    msg = f"🌿 *{nombre_usuario}*, encontré tus conexiones estratégicas para el evento!\n\n"
+    msg += "Analicé todos los perfiles y estos son los más afines a ti:\n\n"
     for m in matches:
         msg += f"*{m.posicion}. {m.nombre}* — {m.nivel} ({m.score}pts)\n"
         msg += f"🏢 {m.empresa}\n📱 {m.movil}\n💡 {m.razon}\n\n"
-    msg += "¿Quieres saber más sobre alguno de estos perfiles o coordinar un encuentro?"
+    msg += "👉 Escribe *ver todos mis contactos* para ver más conexiones."
     return msg
